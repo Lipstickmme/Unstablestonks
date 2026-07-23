@@ -1,13 +1,20 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { Header } from "@/components/terminal/Header";
 import { SwapPanel } from "@/components/terminal/SwapPanel";
 import { PriceChart } from "@/components/terminal/PriceChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
-import { useTokenDetail } from "@/lib/data/hooks";
+import { useTokenDetail, useTokenOhlcv, type ChartTimeframe } from "@/lib/data/hooks";
 import { useChain } from "@/lib/chain-context";
-import { ArrowLeft, Copy, ExternalLink, Users } from "lucide-react";
+import { ArrowLeft, Copy, ExternalLink, Rocket, Users } from "lucide-react";
+
+const TIMEFRAMES: { key: ChartTimeframe; label: string }[] = [
+  { key: "minute", label: "1m" },
+  { key: "hour", label: "1h" },
+  { key: "day", label: "1d" },
+];
 
 export const Route = createFileRoute("/token/$address")({
   head: ({ params }) => ({
@@ -27,9 +34,12 @@ function TokenDetail() {
   const { address } = Route.useParams();
   const { chain } = useChain();
   const { data, isLoading, isError, error } = useTokenDetail(address);
+  const [tf, setTf] = useState<ChartTimeframe>("hour");
+  const chartQ = useTokenOhlcv(data?.pool ?? null, tf);
 
   const token = data?.token;
   const positive = (token?.priceChange24h ?? 0) >= 0;
+  const chart = chartQ.data ?? [];
 
   return (
     <div className="min-h-screen">
@@ -80,6 +90,15 @@ function TokenDetail() {
                             ? "explorer-priced"
                             : "unpriced"}
                       </span>
+                      {token.launchpadName && (
+                        <span className="chip border-grad/40 bg-grad/10 !py-0 text-[9px] text-grad">
+                          <Rocket className="h-2.5 w-2.5" /> {token.launchpadName}
+                          {token.graduated ? " · graduated" : " · on curve"}
+                        </span>
+                      )}
+                      {!token.launchpadName && token.dexName && (
+                        <span className="chip !py-0 text-[9px]">{token.dexName}</span>
+                      )}
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       <span className="num inline-flex items-center gap-1">
@@ -143,27 +162,39 @@ function TokenDetail() {
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_360px]">
               <div className="space-y-4">
                 {/* Chart */}
-                <section className="card-surface overflow-hidden">
+                <section className="card-surface fade-up overflow-hidden">
                   <div className="flex items-center justify-between border-b border-border px-4 py-3">
                     <div className="flex items-center gap-2">
                       <h2 className="text-sm font-medium">Price</h2>
-                      {data.chart.length > 1 && (
+                      {chart.length > 1 && (
                         <span className="chip">
                           <span className="live-dot" /> live
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
-                      1h candles · DEX oracle
-                    </span>
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                      {TIMEFRAMES.map((t) => (
+                        <button
+                          key={t.key}
+                          onClick={() => setTf(t.key)}
+                          className={`rounded px-2 py-1 transition-colors ${
+                            tf === t.key ? "bg-secondary text-foreground" : "hover:text-foreground"
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                      <span className="ml-2 hidden sm:inline">candles · DEX oracle</span>
+                    </div>
                   </div>
                   <div className="h-[260px] p-2 sm:h-[320px]">
-                    {data.chart.length > 1 ? (
-                      <PriceChart points={data.chart} positive={positive} />
+                    {chart.length > 1 ? (
+                      <PriceChart points={chart} positive={positive} />
                     ) : (
                       <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
-                        Price history appears once a DEX oracle indexes this pool on {chain.name}.
-                        Live on-chain trades below still populate from the explorer.
+                        {chartQ.isLoading && data.pool
+                          ? "Loading live candles…"
+                          : `Price history appears once a DEX indexes this pool on ${chain.name}. Live on-chain activity below still populates from the explorer.`}
                       </div>
                     )}
                   </div>

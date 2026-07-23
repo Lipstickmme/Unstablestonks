@@ -22,6 +22,8 @@ export interface RouterConfig {
   address: `0x${string}`;
   /** Fee tier for v3 (e.g. 3000 = 0.3%). Ignored for v2. */
   feeTier?: number;
+  /** QuoterV2 address — required for v3 quoting. */
+  quoter?: `0x${string}`;
 }
 
 export interface ChainConfig {
@@ -62,14 +64,27 @@ function env(key: string): string | undefined {
   return v && v.length > 0 ? v : undefined;
 }
 
-function routerFromEnv(
-  key: string,
-  kind: RouterConfig["kind"],
-  feeTier?: number,
-): RouterConfig | undefined {
-  const addr = env(key);
-  if (!addr || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return undefined;
-  return { kind, address: addr as `0x${string}`, feeTier };
+const isAddr = (v: string | undefined): v is string => Boolean(v && /^0x[0-9a-fA-F]{40}$/.test(v));
+
+/**
+ * Router config from env, per chain:
+ *   VITE_ROUTER_<CHAIN>       router address (required to enable swaps)
+ *   VITE_ROUTER_KIND_<CHAIN>  "v2" (default) | "v3"
+ *   VITE_QUOTER_<CHAIN>       QuoterV2 address (required for v3 quotes)
+ *   VITE_FEE_TIER_<CHAIN>     v3 fee tier, default 3000 (0.3%)
+ */
+function routerFromEnv(chainUpper: string): RouterConfig | undefined {
+  const addr = env(`VITE_ROUTER_${chainUpper}`);
+  if (!isAddr(addr)) return undefined;
+  const kind = env(`VITE_ROUTER_KIND_${chainUpper}`) === "v3" ? "uniswapV3" : "uniswapV2";
+  const quoter = env(`VITE_QUOTER_${chainUpper}`);
+  const feeTier = parseInt(env(`VITE_FEE_TIER_${chainUpper}`) ?? "3000", 10);
+  return {
+    kind,
+    address: addr as `0x${string}`,
+    feeTier: isFinite(feeTier) ? feeTier : 3000,
+    quoter: isAddr(quoter) ? (quoter as `0x${string}`) : undefined,
+  };
 }
 
 export const CHAINS: Record<ChainKey, ChainConfig> = {
@@ -86,8 +101,12 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     explorer: { kind: "blockscout", apiBase: "https://robinhoodchain.blockscout.com/api/v2" },
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     gasToken: "ETH",
-    wrappedNative: env("VITE_WNATIVE_ROBINHOOD") as `0x${string}` | undefined,
-    router: routerFromEnv("VITE_ROUTER_ROBINHOOD", "uniswapV2"),
+    // Canonical WETH on Robinhood Chain (verified via Uniswap deployment docs).
+    wrappedNative: (env("VITE_WNATIVE_ROBINHOOD") ??
+      "0x7943e237c7F95DA44E0301572D358911207852Fa") as `0x${string}`,
+    router: routerFromEnv("ROBINHOOD"),
+    // Robinhood Chain is indexed by GeckoTerminal — unlocks DEX prices/vol/trades.
+    geckoterminalNetwork: "robinhood",
     accent: "oklch(0.87 0.19 128)", // Robinhood lime/green
     tagline: "Arbitrum Orbit L2 · tokenized-stock rails · ~100ms blocks",
   },
@@ -109,7 +128,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     gasToken: "gUSDT",
     stablecoin: { symbol: "USDT0", decimals: 6 },
     wrappedNative: env("VITE_WNATIVE_STABLE") as `0x${string}` | undefined,
-    router: routerFromEnv("VITE_ROUTER_STABLE", "uniswapV2"),
+    router: routerFromEnv("STABLE"),
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
     tagline: "Tether L1 · USDT-native gas · sub-second finality",
   },
@@ -131,7 +150,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     gasToken: "USDC",
     stablecoin: { symbol: "USDC", decimals: 6 },
     wrappedNative: env("VITE_WNATIVE_ARC") as `0x${string}` | undefined,
-    router: routerFromEnv("VITE_ROUTER_ARC", "uniswapV2"),
+    router: routerFromEnv("ARC"),
     accent: "oklch(0.72 0.16 250)", // Circle blue
     tagline: "Circle L1 · USDC-native gas · testnet",
   },

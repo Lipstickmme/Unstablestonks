@@ -264,10 +264,22 @@ export function SwapPanel({ token }: { token: TokenRow }) {
           label="Router"
           value={
             <span className="num">
-              {chain.router ? shortAddr(chain.router.address) : "not set"}
+              {chain.router
+                ? `${chain.router.kind === "uniswapV3" ? "V3 " : "V2 "}${shortAddr(chain.router.address)}`
+                : "not set"}
             </span>
           }
         />
+        {chain.router?.kind === "uniswapV3" && side === "sell" && (
+          <Row
+            label="Settlement"
+            value={
+              <span className="text-muted-foreground">
+                wrapped {chain.nativeCurrency.symbol} (W{chain.nativeCurrency.symbol})
+              </span>
+            }
+          />
+        )}
       </div>
 
       {!enabled && (

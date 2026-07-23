@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { Header } from "@/components/terminal/Header";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
-import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { HotSignals } from "@/components/terminal/HotSignals";
-import { useChainStats, useTokens, useRecentActivity } from "@/lib/data/hooks";
+import { useChainStats, useTokens } from "@/lib/data/hooks";
+import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
 
@@ -31,22 +32,44 @@ function Terminal() {
   const { chain } = useChain();
   const statsQ = useChainStats();
   const tokensQ = useTokens();
-  const tradesQ = useRecentActivity(tokensQ.data);
 
-  const tokens = tokensQ.data ?? [];
+  // Crawl X for the CAs of the top tokens by 24h volume; merge heat into rows.
+  const topAddresses = useMemo(
+    () =>
+      (tokensQ.data ?? [])
+        .filter((t) => t.vol24h > 0)
+        .slice(0, 5)
+        .map((t) => t.address),
+    [tokensQ.data],
+  );
+  const heatQ = useXSocialHeatMap(topAddresses);
+
+  const tokens = useMemo(() => {
+    const rows = tokensQ.data ?? [];
+    const heat = heatQ.data;
+    if (!heat) return rows;
+    return rows.map((t) => {
+      const h = heat[t.address];
+      return h?.ok ? { ...t, socialHeat: h.heat } : t;
+    });
+  }, [tokensQ.data, heatQ.data]);
 
   return (
     <div className="min-h-screen">
       <Header />
 
       <div className="mx-auto max-w-[1600px] space-y-4 px-3 py-4 sm:px-5 sm:py-5">
-        <StatsOverview stats={statsQ.data} loading={statsQ.isLoading} />
+        <div className="fade-up">
+          <StatsOverview stats={statsQ.data} loading={statsQ.isLoading} />
+        </div>
 
-        <HotSignals tokens={tokens} />
+        <div className="fade-up" style={{ animationDelay: "60ms" }}>
+          <HotSignals tokens={tokens} />
+        </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
+        {/* Full-width launches table — live activity moved to the token page. */}
+        <div className="fade-up" style={{ animationDelay: "120ms" }}>
           <TokenTable tokens={tokens} loading={tokensQ.isLoading} error={tokensQ.isError} />
-          <LiveTrades trades={tradesQ.data ?? []} loading={tradesQ.isLoading} />
         </div>
 
         <div className="card-surface flex items-start gap-3 p-4 text-xs text-muted-foreground">
@@ -54,7 +77,7 @@ function Terminal() {
           <p>
             <span className="text-foreground font-medium">Risk notice.</span> Launchpad tokens are
             experimental, highly volatile, and often thinly traded. Every figure here is pulled live
-            from {chain.name}'s public RPC and block explorer — verify against{" "}
+            from {chain.name}'s public RPC, block explorer, and DEX indexers — verify against{" "}
             <a
               href={chain.explorerUrl}
               target="_blank"

@@ -1,4 +1,4 @@
-import { Flame, Users, TrendingUp, Coins } from "lucide-react";
+import { Flame, Users, TrendingUp, Coins, MessageCircle } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatNum, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
@@ -8,10 +8,18 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
     .filter((t) => t.mcap > 0)
     .sort((a, b) => b.mcap - a.mcap)
     .slice(0, 4);
-  const byHolders = [...tokens].sort((a, b) => b.holders - a.holders).slice(0, 4);
   const byVol = [...tokens]
     .filter((t) => t.vol24h > 0)
     .sort((a, b) => b.vol24h - a.vol24h)
+    .slice(0, 4);
+  const byHolders = [...tokens]
+    .filter((t) => t.holders > 0)
+    .sort((a, b) => b.holders - a.holders)
+    .slice(0, 4);
+  // Real crawl results only — tokens whose CA showed up on X this cycle.
+  const byHeat = [...tokens]
+    .filter((t) => t.socialHeat > 0)
+    .sort((a, b) => b.socialHeat - a.socialHeat)
     .slice(0, 4);
 
   const cards = [
@@ -22,21 +30,27 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
       kind: "mcap" as const,
     },
     {
+      title: "24h volume",
+      icon: <Flame className="h-3.5 w-3.5 text-hot" />,
+      items: byVol,
+      kind: "vol" as const,
+    },
+    {
       title: "Most holders",
       icon: <Users className="h-3.5 w-3.5 text-grad" />,
       items: byHolders,
       kind: "holders" as const,
     },
     {
-      title: "24h volume",
-      icon: <Flame className="h-3.5 w-3.5 text-hot" />,
-      items: byVol,
-      kind: "vol" as const,
+      title: "X heat · CA mentions",
+      icon: <MessageCircle className="intel-glow h-3.5 w-3.5 rounded-full text-hot" />,
+      items: byHeat,
+      kind: "heat" as const,
     },
   ];
 
   return (
-    <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
       {cards.map((c) => (
         <div key={c.title} className="card-surface p-4">
           <div className="flex items-center justify-between">
@@ -48,7 +62,11 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
           </div>
           <ul className="mt-3 space-y-1.5">
             {c.items.length === 0 && (
-              <li className="py-2 text-xs text-muted-foreground">No signal yet — feed is live.</li>
+              <li className="py-2 text-xs text-muted-foreground">
+                {c.kind === "heat"
+                  ? "Crawling X for contract mentions…"
+                  : "No signal yet — feed is live."}
+              </li>
             )}
             {c.items.map((t, i) => (
               <li key={t.address}>
@@ -66,10 +84,21 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
                     )}
                   </span>
                   <span className="truncate text-xs font-medium">{t.symbol}</span>
-                  <span className="num ml-auto text-[11px] text-muted-foreground">
+                  <span className="num ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     {c.kind === "mcap" && formatUSD(t.mcap)}
                     {c.kind === "holders" && formatNum(t.holders)}
                     {c.kind === "vol" && formatUSD(t.vol24h)}
+                    {c.kind === "heat" && (
+                      <>
+                        <span className="inline-block h-1 w-8 overflow-hidden rounded-full bg-secondary align-middle">
+                          <span
+                            className="block h-full bg-hot"
+                            style={{ width: `${t.socialHeat}%` }}
+                          />
+                        </span>
+                        {t.socialHeat}
+                      </>
+                    )}
                   </span>
                 </Link>
               </li>

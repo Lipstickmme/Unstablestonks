@@ -50,6 +50,15 @@ export interface TokenRow {
   indexed?: boolean;
   totalSupply?: number;
   decimals?: number;
+  /** Venue the primary pool trades on (e.g. "Uniswap V3"). */
+  dexName?: string;
+  /** Launchpad the token launched from, when its pool sits on one. */
+  launchpadName?: string;
+  /** True when a launchpad token also has a pool on a regular DEX. */
+  graduated?: boolean;
+  /** Real 5-point trend [-24h,-6h,-1h,-5m,now] reconstructed from price changes. */
+  sparkline?: number[];
+  priceChange5m?: number;
 }
 
 export interface TradeEvent {

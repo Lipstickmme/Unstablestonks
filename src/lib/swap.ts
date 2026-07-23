@@ -80,6 +80,58 @@ const ERC20_TX_ABI = [
   },
 ] as const;
 
+// Uniswap V3 — QuoterV2 for quotes (simulated), SwapRouter02 for execution.
+const QUOTER_V2_ABI = [
+  {
+    type: "function",
+    name: "quoteExactInputSingle",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "fee", type: "uint24" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+    ],
+    outputs: [
+      { name: "amountOut", type: "uint256" },
+      { name: "sqrtPriceX96After", type: "uint160" },
+      { name: "initializedTicksCrossed", type: "uint32" },
+      { name: "gasEstimate", type: "uint256" },
+    ],
+  },
+] as const;
+
+const V3_ROUTER_ABI = [
+  {
+    type: "function",
+    name: "exactInputSingle",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "recipient", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+] as const;
+
 export type SwapSide = "buy" | "sell";
 
 export interface SwapQuote {
@@ -123,7 +175,8 @@ export async function quoteSwap(
     };
   }
   const wnative = cfg.wrappedNative as `0x${string}`;
-  const router = cfg.router!.address;
+  const routerCfg = cfg.router!;
+  const router = routerCfg.address;
   const nativeDecimals = cfg.nativeCurrency.decimals;
   const swapAmount = amountIn - feeAmount;
 
@@ -133,13 +186,46 @@ export async function quoteSwap(
 
   try {
     const client = getPublicClient(chainKey);
-    const amounts = (await client.readContract({
-      address: router,
-      abi: V2_ROUTER_ABI,
-      functionName: "getAmountsOut",
-      args: [parseUnits(swapAmount.toString(), inDecimals), path],
-    })) as bigint[];
-    const outWei = amounts[amounts.length - 1];
+    let outWei: bigint;
+
+    if (routerCfg.kind === "uniswapV3") {
+      // V3: QuoterV2.quoteExactInputSingle, simulated off-chain.
+      if (!routerCfg.quoter) {
+        return {
+          ok: false,
+          reason: `V3 quoting needs a QuoterV2 — set VITE_QUOTER_${cfg.key.toUpperCase()}.`,
+          amountOut: 0,
+          minOut: 0,
+          feeAmount,
+          routerReady: false,
+        };
+      }
+      const sim = await client.simulateContract({
+        address: routerCfg.quoter,
+        abi: QUOTER_V2_ABI,
+        functionName: "quoteExactInputSingle",
+        args: [
+          {
+            tokenIn: path[0],
+            tokenOut: path[1],
+            amountIn: parseUnits(swapAmount.toString(), inDecimals),
+            fee: routerCfg.feeTier ?? 3000,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+      });
+      outWei = (sim.result as readonly [bigint, bigint, number, bigint])[0];
+    } else {
+      // V2: router.getAmountsOut along the wrapped-native path.
+      const amounts = (await client.readContract({
+        address: router,
+        abi: V2_ROUTER_ABI,
+        functionName: "getAmountsOut",
+        args: [parseUnits(swapAmount.toString(), inDecimals), path],
+      })) as bigint[];
+      outWei = amounts[amounts.length - 1];
+    }
+
     const amountOut = Number(formatUnits(outWei, outDecimals));
     const minOut = amountOut * (1 - slippageBps / 10_000);
     return { ok: true, amountOut, minOut, feeAmount, routerReady: true };
@@ -180,7 +266,10 @@ export async function executeSwap(params: {
   if (!swapEnabled(cfg)) throw new Error(`Swaps are not enabled on ${cfg.name} yet.`);
 
   const wnative = cfg.wrappedNative as `0x${string}`;
-  const router = cfg.router!.address;
+  const routerCfg = cfg.router!;
+  const router = routerCfg.address;
+  const isV3 = routerCfg.kind === "uniswapV3";
+  const feeTier = routerCfg.feeTier ?? 3000;
   const nativeDecimals = cfg.nativeCurrency.decimals;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const result: SwapExecution = {};
@@ -202,16 +291,37 @@ export async function executeSwap(params: {
       value: feeWei,
     });
 
-    // 2. Router swap of the remainder.
-    result.swapTxHash = await walletClient.writeContract({
-      account,
-      chain,
-      address: router,
-      abi: V2_ROUTER_ABI,
-      functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-      args: [minOutWei, [wnative, token], account, deadline],
-      value: swapWei,
-    });
+    // 2. Router swap of the remainder. V3 SwapRouter02 wraps native sent as value
+    //    when tokenIn is the wrapped-native token.
+    result.swapTxHash = isV3
+      ? await walletClient.writeContract({
+          account,
+          chain,
+          address: router,
+          abi: V3_ROUTER_ABI,
+          functionName: "exactInputSingle",
+          args: [
+            {
+              tokenIn: wnative,
+              tokenOut: token,
+              fee: feeTier,
+              recipient: account,
+              amountIn: swapWei,
+              amountOutMinimum: minOutWei,
+              sqrtPriceLimitX96: 0n,
+            },
+          ],
+          value: swapWei,
+        })
+      : await walletClient.writeContract({
+          account,
+          chain,
+          address: router,
+          abi: V2_ROUTER_ABI,
+          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+          args: [minOutWei, [wnative, token], account, deadline],
+          value: swapWei,
+        });
   } else {
     const feeWei = parseUnits(feeAmount.toString(), tokenDecimals);
     const swapWei = parseUnits(swapAmount.toString(), tokenDecimals);
@@ -240,15 +350,35 @@ export async function executeSwap(params: {
       });
     }
 
-    // 3. Router swap token → native.
-    result.swapTxHash = await walletClient.writeContract({
-      account,
-      chain,
-      address: router,
-      abi: V2_ROUTER_ABI,
-      functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-      args: [swapWei, minOutWei, [token, wnative], account, deadline],
-    });
+    // 3. Router swap token → native. On V3 the output settles as the wrapped
+    //    native ERC-20 (WETH-style) in the seller's wallet.
+    result.swapTxHash = isV3
+      ? await walletClient.writeContract({
+          account,
+          chain,
+          address: router,
+          abi: V3_ROUTER_ABI,
+          functionName: "exactInputSingle",
+          args: [
+            {
+              tokenIn: token,
+              tokenOut: wnative,
+              fee: feeTier,
+              recipient: account,
+              amountIn: swapWei,
+              amountOutMinimum: minOutWei,
+              sqrtPriceLimitX96: 0n,
+            },
+          ],
+        })
+      : await walletClient.writeContract({
+          account,
+          chain,
+          address: router,
+          abi: V2_ROUTER_ABI,
+          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
+          args: [swapWei, minOutWei, [token, wnative], account, deadline],
+        });
   }
 
   return result;

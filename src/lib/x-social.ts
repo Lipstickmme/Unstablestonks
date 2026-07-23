@@ -193,6 +193,50 @@ async function viaNitter(query: string, instances: string[]): Promise<XSocialRes
   return null;
 }
 
+async function crawlOne(query: string): Promise<XSocialResult> {
+  const bearer = serverEnv("X_BEARER_TOKEN");
+  if (bearer) {
+    const r = await viaXApi(query, bearer);
+    if (r) return r;
+  }
+
+  const instances =
+    serverEnv("X_NITTER_INSTANCES")
+      ?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) ?? DEFAULT_NITTER;
+  const nitter = await viaNitter(query, instances);
+  if (nitter) return nitter;
+
+  return {
+    query,
+    posts: [],
+    mentions: 0,
+    uniqueAccounts: 0,
+    impressions: 0,
+    engagement: 0,
+    heat: 0,
+    source: "unavailable",
+    ok: false,
+    note: bearer
+      ? "No recent posts found."
+      : "X crawl source unreachable. Set X_BEARER_TOKEN (official API) or a reachable X_NITTER_INSTANCES for live social data.",
+  };
+}
+
+// Server-side result cache so dashboard refreshes don't hammer X/Nitter.
+const CACHE_TTL_MS = 120_000;
+const crawlCache = new Map<string, { ts: number; result: XSocialResult }>();
+
+async function crawlCached(query: string): Promise<XSocialResult> {
+  const hit = crawlCache.get(query);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
+  const result = await crawlOne(query);
+  // Only cache successful crawls — let failures retry sooner.
+  if (result.ok) crawlCache.set(query, { ts: Date.now(), result });
+  return result;
+}
+
 export const searchXSocial = createServerFn({ method: "GET" })
   .inputValidator((raw: unknown): { query: string } => {
     const q = typeof raw === "object" && raw ? (raw as { query?: unknown }).query : raw;
@@ -202,35 +246,26 @@ export const searchXSocial = createServerFn({ method: "GET" })
     if (!query) throw new Error("query required");
     return { query };
   })
-  .handler(async ({ data }): Promise<XSocialResult> => {
-    const { query } = data;
+  .handler(async ({ data }): Promise<XSocialResult> => crawlCached(data.query));
 
-    const bearer = serverEnv("X_BEARER_TOKEN");
-    if (bearer) {
-      const r = await viaXApi(query, bearer);
-      if (r) return r;
+/**
+ * Batch crawl for the dashboard: heat for up to 5 contract addresses in one
+ * request, sequential upstream calls + server-side cache to respect rate limits.
+ */
+export const searchXSocialBatch = createServerFn({ method: "GET" })
+  .inputValidator((raw: unknown): { queries: string[] } => {
+    const q = typeof raw === "object" && raw ? (raw as { queries?: unknown }).queries : raw;
+    const queries = (Array.isArray(q) ? q : [])
+      .map((v) => String(v ?? "").trim())
+      .filter((v) => v.length > 0)
+      .slice(0, 5);
+    if (!queries.length) throw new Error("queries required");
+    return { queries };
+  })
+  .handler(async ({ data }): Promise<Record<string, XSocialResult>> => {
+    const out: Record<string, XSocialResult> = {};
+    for (const q of data.queries) {
+      out[q] = await crawlCached(q);
     }
-
-    const instances =
-      serverEnv("X_NITTER_INSTANCES")
-        ?.split(",")
-        .map((s) => s.trim())
-        .filter(Boolean) ?? DEFAULT_NITTER;
-    const nitter = await viaNitter(query, instances);
-    if (nitter) return nitter;
-
-    return {
-      query,
-      posts: [],
-      mentions: 0,
-      uniqueAccounts: 0,
-      impressions: 0,
-      engagement: 0,
-      heat: 0,
-      source: "unavailable",
-      ok: false,
-      note: bearer
-        ? "No recent posts found."
-        : "X crawl source unreachable. Set X_BEARER_TOKEN (official API) or a reachable X_NITTER_INSTANCES for live social data.",
-    };
+    return out;
   });
