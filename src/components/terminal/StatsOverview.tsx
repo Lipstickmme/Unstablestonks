@@ -1,63 +1,87 @@
-import { formatUSD, formatNum } from "@/lib/mock-data";
+import { formatNum, formatUSD } from "@/lib/format";
+import type { ChainStats } from "@/lib/types";
+import { useChain } from "@/lib/chain-context";
 import { ArrowUpRight } from "lucide-react";
 
 interface Props {
-  vol24h: number;
-  launches24h: number;
-  trades24h: number;
-  updatedAt: Date;
+  stats?: ChainStats;
+  loading?: boolean;
 }
 
-export function StatsOverview({ vol24h, launches24h, trades24h, updatedAt }: Props) {
+export function StatsOverview({ stats, loading }: Props) {
+  const { chain } = useChain();
+
   const items = [
-    { label: "24h volume", value: formatUSD(vol24h), delta: -18.5 },
-    { label: "24h launches", value: formatNum(launches24h), delta: -14.9 },
-    { label: "24h trades", value: formatNum(trades24h), delta: -9.6 },
+    {
+      label: "24h transactions",
+      value: stats && stats.trades24h > 0 ? formatNum(stats.trades24h) : "—",
+    },
+    {
+      label: "Total addresses",
+      value: stats?.totalAddresses ? formatNum(stats.totalAddresses) : "—",
+    },
+    {
+      label: stats?.vol24h ? "24h DEX volume" : "Gas price",
+      value: stats?.vol24h
+        ? formatUSD(stats.vol24h)
+        : stats?.gasPriceGwei
+          ? `${stats.gasPriceGwei.toFixed(3)} gwei`
+          : "—",
+    },
   ];
+
+  const updated = stats?.updatedAt ?? new Date();
+
   return (
-    <section className="card-surface p-6 md:p-8">
+    <section className="card-surface p-5 sm:p-6 md:p-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-medium tracking-tight md:text-4xl">Protocol analytics</h1>
+          <h1 className="text-2xl font-medium tracking-tight sm:text-3xl md:text-4xl">
+            Protocol analytics
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Independent onchain reporting for pons markets on Robinhood Chain.
+            Live on-chain reporting for {chain.name}.{" "}
+            <span className="text-muted-foreground/70">{chain.tagline}</span>
           </p>
           <p className="mt-2 font-mono text-[11px] text-muted-foreground/80">
-            <span className="live-dot mr-2 inline-block align-middle" />
-            Live · block feed updated {updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })} UTC{'\u00A0'}·{'\u00A0'}RPC rpc.mainnet.chain.robinhood.com
+            <span
+              className={`mr-2 inline-block align-middle ${stats?.live ? "live-dot" : "opacity-40"}`}
+            />
+            {stats?.live ? "Live" : loading ? "Connecting…" : "Source unreachable"}
+            {stats?.blockNumber ? ` · block #${formatNum(stats.blockNumber)}` : ""} · updated{" "}
+            {updated.toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            })}{" "}
+            · RPC {chain.rpcUrls[0].replace(/^https?:\/\//, "")}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-full border border-border bg-surface p-1 text-xs">
-            <button className="rounded-full bg-secondary px-3 py-1 font-medium">24h</button>
-            <button className="rounded-full px-3 py-1 text-muted-foreground hover:text-foreground">All time</button>
-          </div>
-          <a
-            href="#"
-            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-elevated"
-          >
-            View on explorer <ArrowUpRight className="h-3 w-3" />
-          </a>
-        </div>
+        <a
+          href={chain.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-elevated"
+        >
+          View on explorer <ArrowUpRight className="h-3 w-3" />
+        </a>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border md:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-3">
         {items.map((it) => (
           <div key={it.label} className="bg-surface p-5">
             <div className="text-xs text-muted-foreground">{it.label}</div>
-            <div className="mt-2 num text-4xl font-light tracking-tight md:text-5xl">
-              {it.value}
-            </div>
-            <div className={`mt-3 text-xs ${it.delta >= 0 ? "text-bull" : "text-bear"}`}>
-              {it.delta >= 0 ? "+" : ""}
-              {it.delta}% from prior day
+            <div className="num mt-2 text-3xl font-light tracking-tight sm:text-4xl md:text-5xl">
+              {loading && !stats ? <span className="text-muted-foreground/40">···</span> : it.value}
             </div>
           </div>
         ))}
       </div>
 
       <p className="mt-4 text-[11px] text-muted-foreground">
-        Data derived client-side from factory TokenLaunched + pool Swap events. The 24h view uses the latest completed UTC day. Verify any figure against the block explorer.
+        Metrics are read directly from {chain.name}'s block explorer and JSON-RPC. Market/DEX
+        figures appear where a pricing source indexes the chain; otherwise on-chain counters are
+        shown. Verify any figure against the explorer.
       </p>
     </section>
   );
