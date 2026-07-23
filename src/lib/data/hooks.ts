@@ -9,10 +9,18 @@ import {
   fetchTokens,
   fetchTokenTransfers,
 } from "./blockscout";
-import { fetchOhlcv, fetchPoolTrades, fetchTokenMarket, fetchTopPool } from "./geckoterminal";
+import {
+  fetchNetworkPools,
+  fetchOhlcv,
+  fetchPoolTrades,
+  fetchTokenMarket,
+  fetchTokenPools,
+} from "./geckoterminal";
 import { getErc20Meta, getRpcHealth } from "./rpc";
 
-const REFRESH = 20_000;
+// 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
+// (30 calls/min) with the pools + new_pools + stats calls per cycle.
+const REFRESH = 30_000;
 
 export function useChainStats() {
   const { chain, chainKey } = useChain();
@@ -39,12 +47,44 @@ export function useChainStats() {
   });
 }
 
+/**
+ * Token universe for the active chain. Two real sources merged:
+ *  - GeckoTerminal pools (DEX-indexed chains): live 5m/1h/24h volumes, price
+ *    changes, buys/sells, pool age, venue/launchpad labels, sparklines.
+ *  - Blockscout token registry: holders, icons, explorer prices — and the only
+ *    source on chains GeckoTerminal doesn't index yet.
+ * GT rows lead (they carry live market structure); explorer data fills holders
+ * for overlaps and appends registry-only tokens after.
+ */
 export function useTokens() {
   const { chain, chainKey } = useChain();
   return useQuery<TokenRow[]>({
     queryKey: ["tokens", chainKey],
     refetchInterval: REFRESH,
-    queryFn: () => fetchTokens(chain),
+    queryFn: async () => {
+      const [gtRows, bsRows] = await Promise.all([
+        fetchNetworkPools(chain).catch(() => []),
+        fetchTokens(chain).catch(() => []),
+      ]);
+
+      if (gtRows.length === 0) return bsRows;
+
+      const byAddr = new Map(gtRows.map((t) => [t.address, t]));
+      const rest: TokenRow[] = [];
+      for (const bs of bsRows) {
+        const gt = byAddr.get(bs.address);
+        if (gt) {
+          // Enrich the DEX row with registry facts the pools API lacks.
+          gt.holders = bs.holders || gt.holders;
+          gt.logoUrl = gt.logoUrl ?? bs.logoUrl;
+          gt.totalSupply = gt.totalSupply ?? bs.totalSupply;
+          gt.mcap = gt.mcap || bs.mcap;
+        } else {
+          rest.push(bs);
+        }
+      }
+      return [...gtRows, ...rest];
+    },
   });
 }
 
@@ -52,7 +92,8 @@ export interface TokenDetailData {
   token: TokenRow;
   holders: { address: string; amount: number; pct: number }[];
   trades: TradeEvent[];
-  chart: number[];
+  /** Primary (deepest) pool address, when DEX-indexed — feeds the live chart. */
+  pool: string | null;
 }
 
 async function loadTokenDetail(
@@ -76,7 +117,7 @@ async function loadTokenDetail(
       name: meta.name,
       symbol: meta.symbol,
       logo: meta.symbol.slice(0, 2).toUpperCase(),
-      ageMinutes: 0,
+      ageMinutes: -1,
       price: 0,
       priceChange1h: 0,
       priceChange24h: 0,
@@ -106,8 +147,11 @@ async function loadTokenDetail(
     };
   }
 
-  // 3. DEX market enrichment (price/volume/liquidity) when the chain is indexed.
-  const market = await fetchTokenMarket(chain, addr).catch(() => null);
+  // 3. DEX market enrichment + venue labels when the chain is indexed.
+  const [market, pools] = await Promise.all([
+    fetchTokenMarket(chain, addr).catch(() => null),
+    fetchTokenPools(chain, addr).catch(() => []),
+  ]);
   if (market) {
     token.price = market.price || token.price;
     token.priceChange24h = market.priceChange24h;
@@ -118,52 +162,35 @@ async function loadTokenDetail(
     token.priceSource = "geckoterminal";
     token.indexed = true;
   }
+  if (pools.length) {
+    token.dexName = pools[0].dexName;
+    const launchpadPool = pools.find((p) => p.isLaunchpad);
+    const dexPool = pools.find((p) => !p.isLaunchpad);
+    if (launchpadPool) {
+      token.launchpadName = launchpadPool.dexName;
+      token.graduated = Boolean(dexPool);
+      token.graduationPct = token.graduated ? 100 : token.graduationPct;
+    }
+  }
 
   // 4. Holders + trades in parallel.
   const decimals = token.decimals ?? 18;
-  const [holders, transfers, pool] = await Promise.all([
+  const pool = pools[0]?.pool ?? null;
+  const [holders, transfers, dexTrades] = await Promise.all([
     fetchTokenHolders(chain, addr, decimals, token.totalSupply ?? 0),
     fetchTokenTransfers(chain, addr, token.symbol, token.price),
-    fetchTopPool(chain, addr).catch(() => null),
+    pool
+      ? fetchPoolTrades(chain, pool, token.symbol).catch(() => [] as TradeEvent[])
+      : Promise.resolve([] as TradeEvent[]),
   ]);
 
-  let trades = transfers;
-  let chart: number[] = [];
-  if (pool) {
-    const [dexTrades, ohlcv] = await Promise.all([
-      fetchPoolTrades(chain, pool, token.symbol).catch(() => []),
-      fetchOhlcv(chain, pool).catch(() => []),
-    ]);
-    if (dexTrades.length) trades = dexTrades.map((t) => ({ ...t, tokenAddress: addr }));
-    chart = ohlcv;
-  }
+  const trades = dexTrades.length
+    ? dexTrades.map((t) => ({ ...t, tokenAddress: addr }))
+    : transfers;
 
   if (holders[0]) token.topHolderPct = holders[0].pct;
 
-  return { token, holders, trades, chart };
-}
-
-/**
- * Recent trade/transfer activity for the home feed. Uses the top indexed token on
- * the active chain (best liquidity/holders) and returns its latest transfers.
- */
-export function useRecentActivity(tokens: TokenRow[] | undefined) {
-  const { chain, chainKey } = useChain();
-  const top = tokens?.find((t) => t.indexed) ?? tokens?.[0];
-  return useQuery<TradeEvent[]>({
-    queryKey: ["recent-activity", chainKey, top?.address],
-    enabled: Boolean(top?.address),
-    refetchInterval: REFRESH,
-    queryFn: async () => {
-      if (!top) return [];
-      const pool = await fetchTopPool(chain, top.address).catch(() => null);
-      if (pool) {
-        const dex = await fetchPoolTrades(chain, pool, top.symbol).catch(() => []);
-        if (dex.length) return dex.map((t) => ({ ...t, tokenAddress: top.address }));
-      }
-      return fetchTokenTransfers(chain, top.address, top.symbol, top.price);
-    },
-  });
+  return { token, holders, trades, pool };
 }
 
 export function useTokenDetail(address: string) {
@@ -173,5 +200,18 @@ export function useTokenDetail(address: string) {
     refetchInterval: REFRESH,
     retry: 1,
     queryFn: () => loadTokenDetail(chain, chainKey, address),
+  });
+}
+
+export type ChartTimeframe = "minute" | "hour" | "day";
+
+/** Live close-price series for a pool at the chosen timeframe. */
+export function useTokenOhlcv(pool: string | null, timeframe: ChartTimeframe) {
+  const { chain, chainKey } = useChain();
+  return useQuery<number[]>({
+    queryKey: ["ohlcv", chainKey, pool, timeframe],
+    enabled: Boolean(pool),
+    refetchInterval: timeframe === "minute" ? REFRESH : 60_000,
+    queryFn: () => (pool ? fetchOhlcv(chain, pool, timeframe) : Promise.resolve([])),
   });
 }

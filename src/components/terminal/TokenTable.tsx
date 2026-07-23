@@ -1,13 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import {
-  formatAge,
-  formatNum,
-  formatUSD,
-  shortAddr,
-  type TokenRow,
-  type TokenStatus,
-} from "@/lib/mock-data";
+import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
+import type { TokenRow, TokenStatus } from "@/lib/types";
+import { useChain } from "@/lib/chain-context";
 import {
   ArrowDown,
   ArrowUp,
@@ -16,11 +11,7 @@ import {
   Flame,
   Zap,
   Users,
-  Lock,
-  Unlock,
-  Twitter,
-  Send,
-  Globe,
+  Rocket,
   Sparkles,
 } from "lucide-react";
 
@@ -33,15 +24,14 @@ type SortKey =
   | "graduationPct"
   | "socialHeat"
   | "priceChange24h";
-type Filter = "all" | "new" | "trending" | "graduating" | "graduated" | "cto";
+type Filter = "all" | "new" | "trending" | "graduating" | "graduated";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   { key: "all", label: "All launches" },
   { key: "new", label: "New", icon: <Sparkles className="h-3 w-3" /> },
   { key: "trending", label: "Trending", icon: <Flame className="h-3 w-3" /> },
-  { key: "graduating", label: "Graduating" },
+  { key: "graduating", label: "On curve", icon: <Rocket className="h-3 w-3" /> },
   { key: "graduated", label: "Graduated" },
-  { key: "cto", label: "CTO", icon: <Zap className="h-3 w-3" /> },
 ];
 
 function StatusBadge({ s }: { s: TokenStatus }) {
@@ -53,10 +43,10 @@ function StatusBadge({ s }: { s: TokenStatus }) {
     },
     trending: {
       label: "HOT",
-      cls: "text-hot border-hot/40 bg-hot/10",
+      cls: "text-hot border-hot/40 bg-hot/10 intel-glow",
       icon: <Flame className="h-2.5 w-2.5" />,
     },
-    graduating: { label: "GRAD", cls: "text-grad border-grad/40 bg-grad/10" },
+    graduating: { label: "CURVE", cls: "text-grad border-grad/40 bg-grad/10" },
     graduated: { label: "✓ GRAD", cls: "text-bull border-bull/40 bg-bull/10" },
     cto: {
       label: "CTO",
@@ -75,7 +65,8 @@ function StatusBadge({ s }: { s: TokenStatus }) {
   );
 }
 
-function Delta({ v }: { v: number }) {
+function Delta({ v, known }: { v: number; known: boolean }) {
+  if (!known) return <span className="num text-xs text-muted-foreground">—</span>;
   const pos = v >= 0;
   return (
     <span className={`num text-xs ${pos ? "text-bull" : "text-bear"}`}>
@@ -85,22 +76,56 @@ function Delta({ v }: { v: number }) {
   );
 }
 
-function GradBar({ pct }: { pct: number }) {
-  const done = pct >= 100;
+/** Tiny real-data trend: 5 points reconstructed from 5m/1h/6h/24h price changes. */
+function Sparkline({ points, positive }: { points?: number[]; positive: boolean }) {
+  if (!points || points.length < 2) {
+    return <span className="num text-xs text-muted-foreground">—</span>;
+  }
+  const w = 64,
+    h = 20;
+  const min = Math.min(...points),
+    max = Math.max(...points);
+  const step = w / (points.length - 1);
+  const y = (p: number) => h - ((p - min) / (max - min || 1)) * (h - 4) - 2;
+  const d = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${(i * step).toFixed(1)} ${y(p).toFixed(1)}`)
+    .join(" ");
   return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-secondary">
-        <div
-          className={`h-full ${done ? "bg-bull" : "bg-primary"}`}
-          style={{ width: `${Math.min(100, pct)}%` }}
-        />
-      </div>
-      <span className="num text-[11px] text-muted-foreground w-9 text-right">
-        {pct.toFixed(0)}%
-      </span>
-    </div>
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
+      <path
+        d={d}
+        fill="none"
+        stroke={positive ? "var(--bull)" : "var(--bear)"}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        className="spark-draw"
+      />
+    </svg>
   );
 }
+
+/** Venue cell: launchpad + graduation state, or the DEX the token trades on. */
+function VenueCell({ t }: { t: TokenRow }) {
+  if (t.launchpadName) {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="inline-flex items-center gap-1 text-[11px] font-medium">
+          <Rocket className="h-3 w-3 text-grad" />
+          {t.launchpadName}
+        </span>
+        <span className={`text-[10px] ${t.graduated ? "text-bull" : "text-muted-foreground"}`}>
+          {t.graduated ? `✓ graduated → ${t.dexName ?? "DEX"}` : "on bonding curve"}
+        </span>
+      </div>
+    );
+  }
+  if (t.dexName) {
+    return <span className="text-[11px] text-muted-foreground">{t.dexName}</span>;
+  }
+  return <span className="text-[11px] text-muted-foreground">—</span>;
+}
+
+const usdOrDash = (v: number) => (v > 0 ? formatUSD(v) : "—");
 
 export function TokenTable({
   tokens,
@@ -111,6 +136,7 @@ export function TokenTable({
   loading?: boolean;
   error?: boolean;
 }) {
+  const { chain } = useChain();
   const [sort, setSort] = useState<SortKey>("vol24h");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [filter, setFilter] = useState<Filter>("all");
@@ -194,7 +220,7 @@ export function TokenTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-elevated/40 text-left">
-              <th className="px-4 py-2.5 w-[24%]">
+              <th className="w-[22%] px-4 py-2.5">
                 <H k="age" label="Token" />
               </th>
               <th className="px-2 py-2.5">
@@ -202,6 +228,9 @@ export function TokenTable({
               </th>
               <th className="px-2 py-2.5 text-right">
                 <H k="priceChange24h" label="Price 24h" right />
+              </th>
+              <th className="px-2 py-2.5 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Trend
               </th>
               <th className="px-2 py-2.5 text-right">
                 <H k="mcap" label="Mkt cap" right />
@@ -216,7 +245,7 @@ export function TokenTable({
                 <H k="vol24h" label="V·24h" right />
               </th>
               <th className="px-2 py-2.5">
-                <H k="graduationPct" label="Graduation" />
+                <H k="graduationPct" label="Venue" />
               </th>
               <th className="px-2 py-2.5">
                 <H k="socialHeat" label="Social" />
@@ -229,19 +258,19 @@ export function TokenTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={11} className="px-4 py-16 text-center text-sm text-muted-foreground">
                   {loading
-                    ? "Loading tokens from the block explorer…"
+                    ? "Loading live tokens from DEX indexers + block explorer…"
                     : error
-                      ? "Couldn't reach the explorer for this chain. Retrying automatically."
-                      : "No ERC-20 tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
+                      ? "Couldn't reach the data sources for this chain. Retrying automatically."
+                      : "No tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
                 </td>
               </tr>
             )}
             {rows.map((t) => (
               <tr
                 key={t.address}
-                className="group border-b border-border/60 hover:bg-surface-elevated/60 transition-colors"
+                className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
               >
                 <td className="px-4 py-3">
                   <Link
@@ -263,8 +292,8 @@ export function TokenTable({
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-medium truncate">{t.symbol}</span>
-                        <span className="text-xs text-muted-foreground truncate">{t.name}</span>
+                        <span className="truncate font-medium">{t.symbol}</span>
+                        <span className="truncate text-xs text-muted-foreground">{t.name}</span>
                         <div className="flex gap-1">
                           {t.status.slice(0, 2).map((s) => (
                             <StatusBadge key={s} s={s} />
@@ -278,51 +307,51 @@ export function TokenTable({
                             e.preventDefault();
                             navigator.clipboard.writeText(t.address);
                           }}
-                          className="opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity"
+                          className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
                         >
                           <Copy className="h-3 w-3" />
                         </button>
                         <a
-                          href="#"
+                          href={`${chain.explorerUrl}/token/${t.address}`}
+                          target="_blank"
+                          rel="noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity"
+                          className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
                         >
                           <ExternalLink className="h-3 w-3" />
                         </a>
-                        {t.socials.twitter && <Twitter className="h-3 w-3 opacity-60" />}
-                        {t.socials.telegram && <Send className="h-3 w-3 opacity-60" />}
-                        {t.socials.website && <Globe className="h-3 w-3 opacity-60" />}
-                        {t.lockedLiquidity ? (
-                          <Lock className="h-3 w-3 text-bull opacity-70" />
-                        ) : (
-                          <Unlock className="h-3 w-3 text-warn opacity-70" />
-                        )}
                       </div>
                     </div>
                   </Link>
                 </td>
-                <td className="px-2 py-3 num text-xs text-muted-foreground">
+                <td className="num px-2 py-3 text-xs text-muted-foreground">
                   {formatAge(t.ageMinutes)}
                 </td>
                 <td className="px-2 py-3 text-right">
-                  <div className="num text-xs">{formatUSD(t.price)}</div>
-                  <Delta v={t.priceChange24h} />
+                  <div className="num text-xs">{t.price > 0 ? formatUSD(t.price) : "—"}</div>
+                  <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
                 </td>
-                <td className="px-2 py-3 num text-right text-xs">{formatUSD(t.mcap)}</td>
-                <td className="px-2 py-3 num text-right text-xs">{formatUSD(t.vol5m)}</td>
-                <td className="px-2 py-3 num text-right text-xs">{formatUSD(t.vol1h)}</td>
-                <td className="px-2 py-3 num text-right text-xs">{formatUSD(t.vol24h)}</td>
+                <td className="px-2 py-3 text-center">
+                  <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
+                </td>
+                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.mcap)}</td>
+                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol5m)}</td>
+                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol1h)}</td>
+                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol24h)}</td>
                 <td className="px-2 py-3">
-                  <GradBar pct={t.graduationPct} />
+                  <VenueCell t={t} />
                 </td>
                 <td className="px-2 py-3">
                   <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-14 rounded-full bg-secondary overflow-hidden">
-                      <div className="h-full bg-hot" style={{ width: `${t.socialHeat}%` }} />
+                    <div className="h-1.5 w-14 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
+                        style={{ width: `${t.socialHeat}%` }}
+                      />
                     </div>
-                    <span className="num text-[11px] text-muted-foreground flex items-center gap-1">
+                    <span className="num flex items-center gap-1 text-[11px] text-muted-foreground">
                       <Users className="h-2.5 w-2.5" />
-                      {formatNum(t.holders)}
+                      {t.holders > 0 ? formatNum(t.holders) : "—"}
                     </span>
                   </div>
                 </td>
@@ -330,7 +359,7 @@ export function TokenTable({
                   <Link
                     to="/token/$address"
                     params={{ address: t.address }}
-                    className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
+                    className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
                   >
                     <Zap className="h-3 w-3" /> Buy
                   </Link>

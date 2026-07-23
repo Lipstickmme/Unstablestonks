@@ -189,3 +189,58 @@
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted-foreground);
 }
+
+/* ── Intelligence micro-animations (minimal, purposeful) ── */
+
+/* Cards easing in as live data hydrates */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-up {
+  animation: fade-up 0.45s ease-out both;
+}
+
+/* Soft pulse that marks "signal detected" surfaces (hot chips, heat bars) */
+@keyframes intel-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 3px color-mix(in oklch, var(--hot) 60%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 10px color-mix(in oklch, var(--hot) 80%, transparent);
+  }
+}
+.intel-glow {
+  animation: intel-glow 2.4s ease-in-out infinite;
+}
+
+/* Sparkline draw-in on first paint */
+@keyframes spark-draw {
+  from {
+    stroke-dasharray: 120;
+    stroke-dashoffset: 120;
+  }
+  to {
+    stroke-dasharray: 120;
+    stroke-dashoffset: 0;
+  }
+}
+.spark-draw {
+  animation: spark-draw 0.8s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-up,
+  .intel-glow,
+  .spark-draw,
+  .live-dot {
+    animation: none;
+  }
+}

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { searchXSocial, type XSocialResult } from "@/lib/x-social";
+import { searchXSocial, searchXSocialBatch, type XSocialResult } from "@/lib/x-social";
 
 /**
  * Crawl X for real posts / reach about a contract address (or symbol).
@@ -14,5 +14,21 @@ export function useXSocial(query: string | undefined, enabled = true) {
     refetchInterval: 120_000,
     retry: 0,
     queryFn: () => searchXSocial({ data: { query: query as string } }),
+  });
+}
+
+/**
+ * Dashboard heat map: crawl X for up to 5 contract addresses in one batched
+ * server call (cached server-side). Returns { address → heat/mentions/... }.
+ */
+export function useXSocialHeatMap(addresses: string[]) {
+  const key = addresses.join(",");
+  return useQuery<Record<string, XSocialResult>>({
+    queryKey: ["x-social-batch", key],
+    enabled: addresses.length > 0,
+    staleTime: 120_000,
+    refetchInterval: 180_000,
+    retry: 0,
+    queryFn: () => searchXSocialBatch({ data: { queries: addresses } }),
   });
 }

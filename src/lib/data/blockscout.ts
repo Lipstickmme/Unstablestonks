@@ -69,7 +69,8 @@ function mapToken(t: BsToken): TokenRow {
     symbol,
     logo: symbol.slice(0, 2).toUpperCase(),
     logoUrl: t.icon_url || undefined,
-    ageMinutes: 0,
+    ageMinutes: -1, // unknown from the explorer list — rendered as "—"
+
     price,
     priceChange1h: 0,
     priceChange24h: 0,
