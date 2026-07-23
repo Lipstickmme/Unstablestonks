@@ -1,17 +1,142 @@
-import { useState } from "react";
-import { ArrowDown, Settings2, Zap, Lock } from "lucide-react";
-import { formatUSD, type TokenRow } from "@/lib/mock-data";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowDown, Settings2, Zap, Loader2, ExternalLink } from "lucide-react";
+import { formatCompactToken, formatUSD, shortAddr } from "@/lib/format";
+import type { TokenRow } from "@/lib/types";
+import { useChain } from "@/lib/chain-context";
+import { useWallet } from "@/lib/wallet";
+import {
+  executeSwap,
+  feePreview,
+  quoteSwap,
+  swapEnabled,
+  FEE_RECIPIENT,
+  PLATFORM_FEE_BPS,
+  type SwapQuote,
+} from "@/lib/swap";
+import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
 
 export function SwapPanel({ token }: { token: TokenRow }) {
+  const { chain, chainKey } = useChain();
+  const wallet = useWallet();
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [amount, setAmount] = useState("0.5");
-  const [slip, setSlip] = useState(1);
+  const [amount, setAmount] = useState("");
+  const [slipBps, setSlipBps] = useState(100);
+  const [quote, setQuote] = useState<SwapQuote | null>(null);
+  const [quoting, setQuoting] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
+  const tokenAddr = token.address as `0x${string}`;
+  const tokenDecimals = token.decimals ?? 18;
   const amtNum = parseFloat(amount) || 0;
-  const ethPrice = 3400;
-  const usd = side === "buy" ? amtNum * ethPrice : amtNum * token.price;
-  const outTokens = side === "buy" ? usd / token.price : amtNum;
-  const impact = Math.min(9, (usd / (token.liquidityEth * ethPrice)) * 100);
+  const enabled = swapEnabled(chain);
+  const wrongChain = wallet.address != null && wallet.chainId !== chain.id;
+  const inputSymbol = side === "buy" ? chain.nativeCurrency.symbol : token.symbol;
+  const outputSymbol = side === "buy" ? token.symbol : chain.nativeCurrency.symbol;
+
+  // Balance of the input asset.
+  useEffect(() => {
+    let cancel = false;
+    setBalance(null);
+    if (!wallet.address) return;
+    const load = async () => {
+      const bal =
+        side === "buy"
+          ? await getNativeBalance(chainKey, wallet.address as `0x${string}`)
+          : await getErc20Balance(
+              chainKey,
+              tokenAddr,
+              wallet.address as `0x${string}`,
+              tokenDecimals,
+            );
+      if (!cancel) setBalance(bal);
+    };
+    load();
+    return () => {
+      cancel = true;
+    };
+  }, [wallet.address, side, chainKey, tokenAddr, tokenDecimals]);
+
+  // Live quote (debounced).
+  useEffect(() => {
+    if (!enabled || amtNum <= 0) {
+      setQuote(null);
+      return;
+    }
+    let cancel = false;
+    setQuoting(true);
+    const id = setTimeout(async () => {
+      const q = await quoteSwap(chainKey, side, amtNum, tokenAddr, tokenDecimals, slipBps);
+      if (!cancel) {
+        setQuote(q);
+        setQuoting(false);
+      }
+    }, 400);
+    return () => {
+      cancel = true;
+      clearTimeout(id);
+    };
+  }, [enabled, amtNum, side, chainKey, tokenAddr, tokenDecimals, slipBps]);
+
+  const fee = useMemo(() => feePreview(amtNum), [amtNum]);
+  const usdIn = side === "buy" ? amtNum * 0 : amtNum * token.price; // native USD price unknown per-chain; skip
+  const outEstimate = quote?.ok ? quote.amountOut : side === "buy" && token.price > 0 ? 0 : 0;
+
+  async function onAction() {
+    setStatus(null);
+    setTxHash(null);
+    if (!wallet.address) {
+      wallet.connect();
+      return;
+    }
+    if (wrongChain) {
+      const ok = await wallet.ensureChain(chain);
+      if (!ok) setStatus(`Switch your wallet to ${chain.name} to continue.`);
+      return;
+    }
+    if (!enabled) return;
+    if (!quote?.ok) {
+      setStatus(quote?.reason ?? "Enter an amount to get a quote.");
+      return;
+    }
+    const client = wallet.getWalletClient(chain);
+    if (!client) {
+      setStatus("Wallet unavailable.");
+      return;
+    }
+    setBusy(true);
+    setStatus("Confirm the fee + swap in your wallet…");
+    try {
+      const res = await executeSwap({
+        chainKey,
+        walletClient: client,
+        account: wallet.address,
+        side,
+        amountIn: amtNum,
+        token: tokenAddr,
+        tokenDecimals,
+        minOut: quote.minOut,
+      });
+      setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
+      setStatus("Submitted. Track it on the explorer.");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message.split("\n")[0] : "Swap failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const actionLabel = !wallet.address
+    ? "Connect wallet"
+    : wrongChain
+      ? `Switch to ${chain.shortName}`
+      : !enabled
+        ? "Router not configured"
+        : busy
+          ? "Confirm in wallet…"
+          : `${side === "buy" ? "Buy" : "Sell"} ${token.symbol}`;
 
   return (
     <section className="card-surface p-4">
@@ -30,7 +155,7 @@ export function SwapPanel({ token }: { token: TokenRow }) {
             Sell
           </button>
         </div>
-        <button className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-surface-elevated">
+        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-surface-elevated hover:text-foreground">
           <Settings2 className="h-4 w-4" />
         </button>
       </div>
@@ -39,30 +164,40 @@ export function SwapPanel({ token }: { token: TokenRow }) {
         <div className="rounded-xl border border-border bg-background p-3">
           <div className="flex justify-between text-[11px] text-muted-foreground">
             <span>You pay</span>
-            <span>Balance: 2.481 ETH</span>
+            <span>
+              Balance: {balance != null ? formatCompactToken(balance) : "—"} {inputSymbol}
+            </span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <input
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              inputMode="decimal"
+              placeholder="0.0"
+              onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
               className="num flex-1 bg-transparent text-2xl font-light outline-none"
             />
             <div className="flex items-center gap-1.5 rounded-full bg-surface-elevated px-2.5 py-1 text-xs font-medium">
               <div className="h-4 w-4 rounded-full bg-primary/70" />
-              {side === "buy" ? "WETH" : token.symbol}
+              {inputSymbol}
             </div>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span className="num">≈ {formatUSD(usd)}</span>
+            <span className="num">{usdIn > 0 ? `≈ ${formatUSD(usdIn)}` : " "}</span>
             <div className="flex gap-1">
-              {["25%", "50%", "MAX"].map((p) => (
-                <button key={p} className="rounded px-1.5 py-0.5 text-[10px] hover:bg-surface-elevated">{p}</button>
+              {[0.25, 0.5, 1].map((p) => (
+                <button
+                  key={p}
+                  onClick={() => balance != null && setAmount((balance * p).toString())}
+                  className="rounded px-1.5 py-0.5 text-[10px] hover:bg-surface-elevated"
+                >
+                  {p === 1 ? "MAX" : `${p * 100}%`}
+                </button>
               ))}
             </div>
           </div>
         </div>
 
-        <div className="flex justify-center -my-3.5 relative z-10">
+        <div className="relative z-10 -my-3.5 flex justify-center">
           <div className="rounded-lg border border-border bg-surface p-1.5">
             <ArrowDown className="h-3.5 w-3.5" />
           </div>
@@ -70,46 +205,105 @@ export function SwapPanel({ token }: { token: TokenRow }) {
 
         <div className="rounded-xl border border-border bg-background p-3">
           <div className="flex justify-between text-[11px] text-muted-foreground">
-            <span>You receive</span>
-            <span>1 {token.symbol} = {formatUSD(token.price)}</span>
+            <span>You receive (est.)</span>
+            {token.price > 0 && (
+              <span>
+                1 {token.symbol} = {formatUSD(token.price)}
+              </span>
+            )}
           </div>
           <div className="mt-1 flex items-center gap-2">
             <div className="num flex-1 text-2xl font-light">
-              {outTokens.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+              {quoting ? "…" : quote?.ok ? formatCompactToken(outEstimate) : "0.0"}
             </div>
             <div className="flex items-center gap-1.5 rounded-full bg-surface-elevated px-2.5 py-1 text-xs font-medium">
-              <span className="text-base">{token.logo}</span>
-              {side === "buy" ? token.symbol : "WETH"}
+              {outputSymbol}
             </div>
           </div>
         </div>
       </div>
 
       <div className="mt-3 space-y-1.5 rounded-lg border border-dashed border-border p-2.5 text-[11px]">
-        <Row label="Price impact" value={<span className={impact > 3 ? "text-warn" : "text-muted-foreground"}>{impact.toFixed(2)}%</span>} />
-        <Row label="Slippage" value={
-          <div className="flex items-center gap-1">
-            {[0.5, 1, 3].map((s) => (
-              <button key={s} onClick={() => setSlip(s)}
-                className={`rounded px-1.5 py-0.5 text-[10px] ${slip === s ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}>{s}%</button>
-            ))}
-          </div>
-        } />
-        <Row label="Pool" value={<span className="num">RH-Uni v3 · 1% fee</span>} />
-        <Row label="Router" value={<span className="num">0xCaf6…5cb2</span>} />
-        <Row label="Liquidity" value={
-          <span className="inline-flex items-center gap-1 text-bull">
-            <Lock className="h-2.5 w-2.5" /> Locked
-          </span>
-        } />
+        <Row
+          label={`Platform fee (${(PLATFORM_FEE_BPS / 100).toFixed(2)}%)`}
+          value={
+            <span className="num">
+              {fee > 0 ? `${formatCompactToken(fee)} ${inputSymbol}` : "—"}
+            </span>
+          }
+        />
+        <Row
+          label="Fee recipient"
+          value={<span className="num">{shortAddr(FEE_RECIPIENT)}</span>}
+        />
+        <Row
+          label="Min received"
+          value={
+            <span className="num">
+              {quote?.ok ? `${formatCompactToken(quote.minOut)} ${outputSymbol}` : "—"}
+            </span>
+          }
+        />
+        <Row
+          label="Slippage"
+          value={
+            <div className="flex items-center gap-1">
+              {[50, 100, 300].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSlipBps(s)}
+                  className={`rounded px-1.5 py-0.5 text-[10px] ${slipBps === s ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {s / 100}%
+                </button>
+              ))}
+            </div>
+          }
+        />
+        <Row
+          label="Router"
+          value={
+            <span className="num">
+              {chain.router ? shortAddr(chain.router.address) : "not set"}
+            </span>
+          }
+        />
       </div>
 
-      <button className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity">
-        <Zap className="h-4 w-4" />
-        {side === "buy" ? "Buy" : "Sell"} {token.symbol}
+      {!enabled && (
+        <p className="mt-2 rounded-lg border border-warn/30 bg-warn/10 p-2 text-[11px] text-warn">
+          No DEX router is configured for {chain.name} yet. The{" "}
+          {(PLATFORM_FEE_BPS / 100).toFixed(2)}% treasury fee and routing activate here as soon as a
+          router address is set (VITE_ROUTER_{chain.key.toUpperCase()}).
+        </p>
+      )}
+
+      <button
+        onClick={onAction}
+        disabled={busy || (Boolean(wallet.address) && !wrongChain && !enabled)}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+        {actionLabel}
       </button>
+
+      {status && (
+        <p className="mt-2 text-center text-[11px] text-muted-foreground">
+          {status}
+          {txHash && (
+            <a
+              href={`${chain.explorerUrl}/tx/${txHash}`}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-1 inline-flex items-center gap-0.5 text-primary hover:underline"
+            >
+              view <ExternalLink className="h-2.5 w-2.5" />
+            </a>
+          )}
+        </p>
+      )}
       <p className="mt-2 text-center text-[10px] text-muted-foreground">
-        Non-custodial · direct wallet signature · never routed off-chain.
+        Non-custodial · direct wallet signature · fee routed on-chain to the treasury.
       </p>
     </section>
   );

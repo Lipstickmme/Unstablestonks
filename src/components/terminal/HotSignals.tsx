@@ -1,16 +1,38 @@
-import { Flame, Zap, TrendingUp, MessageCircle } from "lucide-react";
+import { Flame, Users, TrendingUp, Coins } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { formatUSD, type TokenRow } from "@/lib/mock-data";
+import { formatNum, formatUSD } from "@/lib/format";
+import type { TokenRow } from "@/lib/types";
 
 export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
-  const spikes = [...tokens].sort((a, b) => b.vol5m - a.vol5m).slice(0, 4);
-  const ctos = tokens.filter((t) => t.status.includes("cto")).slice(0, 3);
-  const social = [...tokens].sort((a, b) => b.socialHeat - a.socialHeat).slice(0, 4);
+  const byMcap = [...tokens]
+    .filter((t) => t.mcap > 0)
+    .sort((a, b) => b.mcap - a.mcap)
+    .slice(0, 4);
+  const byHolders = [...tokens].sort((a, b) => b.holders - a.holders).slice(0, 4);
+  const byVol = [...tokens]
+    .filter((t) => t.vol24h > 0)
+    .sort((a, b) => b.vol24h - a.vol24h)
+    .slice(0, 4);
 
   const cards = [
-    { title: "Volume spikes · 5m", icon: <Flame className="h-3.5 w-3.5 text-hot" />, items: spikes, kind: "vol" as const },
-    { title: "New CTOs", icon: <Zap className="h-3.5 w-3.5 text-cto" />, items: ctos, kind: "cto" as const },
-    { title: "X mentions · hot CA", icon: <MessageCircle className="h-3.5 w-3.5 text-primary" />, items: social, kind: "social" as const },
+    {
+      title: "Top market cap",
+      icon: <Coins className="h-3.5 w-3.5 text-primary" />,
+      items: byMcap,
+      kind: "mcap" as const,
+    },
+    {
+      title: "Most holders",
+      icon: <Users className="h-3.5 w-3.5 text-grad" />,
+      items: byHolders,
+      kind: "holders" as const,
+    },
+    {
+      title: "24h volume",
+      icon: <Flame className="h-3.5 w-3.5 text-hot" />,
+      items: byVol,
+      kind: "vol" as const,
+    },
   ];
 
   return (
@@ -26,7 +48,7 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
           </div>
           <ul className="mt-3 space-y-1.5">
             {c.items.length === 0 && (
-              <li className="text-xs text-muted-foreground py-2">No signal yet — feed live.</li>
+              <li className="py-2 text-xs text-muted-foreground">No signal yet — feed is live.</li>
             )}
             {c.items.map((t, i) => (
               <li key={t.address}>
@@ -36,19 +58,18 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
                   className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-elevated"
                 >
                   <span className="num w-4 text-[10px] text-muted-foreground">{i + 1}</span>
-                  <span className="text-base">{t.logo}</span>
-                  <span className="text-xs font-medium">{t.symbol}</span>
-                  <span className="ml-auto num text-[11px] text-muted-foreground">
-                    {c.kind === "vol" && formatUSD(t.vol5m)}
-                    {c.kind === "cto" && t.ctoAt && `${Math.floor((Date.now() - t.ctoAt) / 3600000)}h ago`}
-                    {c.kind === "social" && (
-                      <span className="inline-flex items-center gap-1">
-                        <span className="h-1 w-8 rounded-full bg-secondary overflow-hidden inline-block align-middle">
-                          <span className="block h-full bg-hot" style={{ width: `${t.socialHeat}%` }} />
-                        </span>
-                        {t.socialHeat}
-                      </span>
+                  <span className="grid h-5 w-5 flex-shrink-0 place-items-center overflow-hidden rounded-full bg-secondary text-[9px] font-semibold text-muted-foreground">
+                    {t.logoUrl ? (
+                      <img src={t.logoUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      t.logo
                     )}
+                  </span>
+                  <span className="truncate text-xs font-medium">{t.symbol}</span>
+                  <span className="num ml-auto text-[11px] text-muted-foreground">
+                    {c.kind === "mcap" && formatUSD(t.mcap)}
+                    {c.kind === "holders" && formatNum(t.holders)}
+                    {c.kind === "vol" && formatUSD(t.vol24h)}
                   </span>
                 </Link>
               </li>
