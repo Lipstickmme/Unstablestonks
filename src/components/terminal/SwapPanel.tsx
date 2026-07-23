@@ -1,17 +1,16 @@
 import { useState } from "react";
 import { ArrowDown, Settings2, Zap, Lock } from "lucide-react";
-import { formatUSD, type TokenRow } from "@/lib/mock-data";
+import { formatUSD, type OnchainToken } from "@/lib/onchain";
+import { Soon } from "./common";
 
-export function SwapPanel({ token }: { token: TokenRow }) {
+export function SwapPanel({ token }: { token: OnchainToken }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("0.5");
-  const [slip, setSlip] = useState(1);
 
   const amtNum = parseFloat(amount) || 0;
-  const ethPrice = 3400;
+  const ethPrice = 1900;
   const usd = side === "buy" ? amtNum * ethPrice : amtNum * token.price;
-  const outTokens = side === "buy" ? usd / token.price : amtNum;
-  const impact = Math.min(9, (usd / (token.liquidityEth * ethPrice)) * 100);
+  const outTokens = side === "buy" ? (token.price ? usd / token.price : 0) : amtNum;
 
   return (
     <section className="card-surface p-4">
@@ -30,16 +29,19 @@ export function SwapPanel({ token }: { token: TokenRow }) {
             Sell
           </button>
         </div>
-        <button className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-surface-elevated">
-          <Settings2 className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <Soon label="swap coming soon" />
+          <button className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-surface-elevated">
+            <Settings2 className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className="mt-3 space-y-2 opacity-70">
         <div className="rounded-xl border border-border bg-background p-3">
           <div className="flex justify-between text-[11px] text-muted-foreground">
             <span>You pay</span>
-            <span>Balance: 2.481 ETH</span>
+            <span>Connect wallet →</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <input
@@ -52,14 +54,7 @@ export function SwapPanel({ token }: { token: TokenRow }) {
               {side === "buy" ? "WETH" : token.symbol}
             </div>
           </div>
-          <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span className="num">≈ {formatUSD(usd)}</span>
-            <div className="flex gap-1">
-              {["25%", "50%", "MAX"].map((p) => (
-                <button key={p} className="rounded px-1.5 py-0.5 text-[10px] hover:bg-surface-elevated">{p}</button>
-              ))}
-            </div>
-          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground num">≈ {formatUSD(usd)}</div>
         </div>
 
         <div className="flex justify-center -my-3.5 relative z-10">
@@ -78,7 +73,6 @@ export function SwapPanel({ token }: { token: TokenRow }) {
               {outTokens.toLocaleString(undefined, { maximumFractionDigits: 4 })}
             </div>
             <div className="flex items-center gap-1.5 rounded-full bg-surface-elevated px-2.5 py-1 text-xs font-medium">
-              <span className="text-base">{token.logo}</span>
               {side === "buy" ? token.symbol : "WETH"}
             </div>
           </div>
@@ -86,30 +80,28 @@ export function SwapPanel({ token }: { token: TokenRow }) {
       </div>
 
       <div className="mt-3 space-y-1.5 rounded-lg border border-dashed border-border p-2.5 text-[11px]">
-        <Row label="Price impact" value={<span className={impact > 3 ? "text-warn" : "text-muted-foreground"}>{impact.toFixed(2)}%</span>} />
-        <Row label="Slippage" value={
-          <div className="flex items-center gap-1">
-            {[0.5, 1, 3].map((s) => (
-              <button key={s} onClick={() => setSlip(s)}
-                className={`rounded px-1.5 py-0.5 text-[10px] ${slip === s ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}>{s}%</button>
-            ))}
-          </div>
-        } />
-        <Row label="Pool" value={<span className="num">RH-Uni v3 · 1% fee</span>} />
-        <Row label="Router" value={<span className="num">0xCaf6…5cb2</span>} />
-        <Row label="Liquidity" value={
-          <span className="inline-flex items-center gap-1 text-bull">
-            <Lock className="h-2.5 w-2.5" /> Locked
-          </span>
-        } />
+        <Row label="Pool" value={<span className="num">Uniswap V3 · 1% fee</span>} />
+        <Row label="Slippage" value={<Soon label="soon" />} />
+        <Row label="Router" value={<Soon label="soon" />} />
+        <Row
+          label="Liquidity"
+          value={
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <Lock className="h-2.5 w-2.5" /> <Soon label="soon" />
+            </span>
+          }
+        />
       </div>
 
-      <button className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity">
+      <button
+        disabled
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary/40 py-3 text-sm font-semibold text-primary-foreground cursor-not-allowed"
+      >
         <Zap className="h-4 w-4" />
-        {side === "buy" ? "Buy" : "Sell"} {token.symbol}
+        Non-custodial swap · coming soon
       </button>
       <p className="mt-2 text-center text-[10px] text-muted-foreground">
-        Non-custodial · direct wallet signature · never routed off-chain.
+        Wallet signing routes directly to the pool once wallet connect ships. No custody, ever.
       </p>
     </section>
   );
