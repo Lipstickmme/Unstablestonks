@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { proxiedFetchText } from "./net";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // X (Twitter) social intelligence.
@@ -145,15 +146,13 @@ function decodeEntities(s: string): string {
 
 async function viaNitter(query: string, instances: string[]): Promise<XSocialResult | null> {
   for (const base of instances) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 9_000);
     try {
-      const res = await fetch(`${base}/search/rss?f=tweets&q=${encodeURIComponent(query)}`, {
-        signal: ctrl.signal,
-        headers: { Accept: "application/rss+xml, application/xml, text/xml" },
-      });
-      if (!res.ok) continue;
-      const xml = await res.text();
+      // Origin first, then CORS/edge proxies (api.cors.lol, proxy.cors.sh, r.jina.ai).
+      const xml = await proxiedFetchText(
+        `${base}/search/rss?f=tweets&q=${encodeURIComponent(query)}`,
+        { timeoutMs: 9_000, headers: { Accept: "application/rss+xml, application/xml, text/xml" } },
+      );
+      if (!xml) continue;
       const items = xml.split(/<item>/).slice(1);
       if (!items.length) continue;
       const posts: XPost[] = items.slice(0, 40).map((item) => {
@@ -186,8 +185,6 @@ async function viaNitter(query: string, instances: string[]): Promise<XSocialRes
       };
     } catch {
       continue;
-    } finally {
-      clearTimeout(t);
     }
   }
   return null;

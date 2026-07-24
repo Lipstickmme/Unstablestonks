@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -130,6 +131,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     };
   }, [resolveProvider]);
 
+  const connectingRef = useRef(false);
+
   const connect = useCallback(
     async (wallet?: DiscoveredWallet): Promise<`0x${string}` | null> => {
       const provider = wallet?.provider ?? resolveProvider();
@@ -139,6 +142,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         );
         return null;
       }
+      // Guard against overlapping requests — a second eth_requestAccounts while
+      // one is pending is what makes wallets throw a spurious rejection.
+      if (connectingRef.current) return null;
+
+      // If already authorized, don't re-prompt (silently reuse the account).
+      try {
+        const existing = (await provider.request({ method: "eth_accounts" })) as string[];
+        if (existing?.[0]) {
+          setAddress(existing[0] as `0x${string}`);
+          const id = (await provider.request({ method: "eth_chainId" })) as string;
+          setChainId(parseInt(id, 16));
+          return existing[0] as `0x${string}`;
+        }
+      } catch {
+        /* fall through to request */
+      }
+
+      connectingRef.current = true;
       setConnecting(true);
       setError(null);
       try {
@@ -157,13 +178,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const code = (e as { code?: number })?.code;
         setError(
           code === 4001
-            ? "Connection request rejected in your wallet."
-            : e instanceof Error
-              ? e.message
-              : "Failed to connect wallet.",
+            ? "Connection request rejected — approve it in your wallet to continue."
+            : code === -32002
+              ? "A connection request is already open — check your wallet extension/app."
+              : e instanceof Error
+                ? e.message
+                : "Failed to connect wallet.",
         );
         return null;
       } finally {
+        connectingRef.current = false;
         setConnecting(false);
       }
     },

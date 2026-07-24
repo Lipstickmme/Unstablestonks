@@ -5,22 +5,11 @@
 
 import type { ChainConfig } from "@/config/chains";
 import type { ChainStats, TokenRow, TradeEvent } from "../types";
+import { proxiedFetchJson } from "../net";
 
 async function safeJson<T>(url: string, timeoutMs = 12_000): Promise<T | null> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
+  // Origin first, then CORS-proxy fallbacks (some explorers block browser CORS).
+  return proxiedFetchJson<T>(url, { timeoutMs, headers: { Accept: "application/json" } });
 }
 
 const num = (v: unknown): number => {

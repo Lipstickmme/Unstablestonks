@@ -131,8 +131,10 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     stablecoin: { symbol: "USDT0", decimals: 18 },
     wrappedNative: env("VITE_WNATIVE_STABLE") as `0x${string}` | undefined,
     router: routerFromEnv("STABLE"),
-    // GeckoTerminal slug when Stable gets DEX-indexed (override via env).
-    geckoterminalNetwork: env("VITE_GT_NETWORK_STABLE"),
+    // GeckoTerminal DEX index. "stable" follows the same lowercase-name slug that
+    // works for Robinhood; if Stable is indexed there, the table fills with live
+    // pool data. Harmless empty otherwise. Override via env if the slug differs.
+    geckoterminalNetwork: env("VITE_GT_NETWORK_STABLE") ?? "stable",
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
     tagline: "Tether L1 · USDT-native gas · sub-second finality",
   },

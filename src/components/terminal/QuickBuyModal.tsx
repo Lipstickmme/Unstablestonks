@@ -2,23 +2,15 @@ import { useEffect } from "react";
 import { X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { TokenRow } from "@/lib/types";
-import { useWallet } from "@/lib/wallet";
 import { SwapPanel } from "./SwapPanel";
 
 /**
- * Quick-buy dialog opened from the table's Buy button. Triggers a wallet
- * connection immediately on open (that's the point of the button), then shows
- * the swap panel defaulted to Buy — without navigating away from the terminal.
+ * Quick-buy dialog opened from the table's Buy button — no navigation. The wallet
+ * connection is triggered by the Buy click itself (a real user gesture, handled
+ * in the caller); connecting from an effect here would make wallets reject the
+ * request. The swap panel's primary button also connects if still disconnected.
  */
 export function QuickBuyModal({ token, onClose }: { token: TokenRow; onClose: () => void }) {
-  const { address, connect } = useWallet();
-
-  // "Buy" should engage the wallet right away.
-  useEffect(() => {
-    if (!address) void connect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Close on Escape.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
