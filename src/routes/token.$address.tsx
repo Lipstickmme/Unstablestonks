@@ -6,7 +6,8 @@ import { PriceChart } from "@/components/terminal/PriceChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
-import { useTokenDetail, useTokenOhlcv, type ChartTimeframe } from "@/lib/data/hooks";
+import { useTokenDetail, useTokens, useTokenOhlcv, type ChartTimeframe } from "@/lib/data/hooks";
+import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { ArrowLeft, Copy, ExternalLink, Rocket, Users } from "lucide-react";
 
@@ -36,6 +37,14 @@ function TokenDetail() {
   const { data, isLoading, isError, error } = useTokenDetail(address);
   const [tf, setTf] = useState<ChartTimeframe>("hour");
   const chartQ = useTokenOhlcv(data?.pool ?? null, tf);
+
+  // Peers for share-of-voice: this chain's top tokens by 24h volume.
+  const tokensQ = useTokens();
+  const peers = (tokensQ.data ?? [])
+    .filter((t) => t.vol24h > 0)
+    .slice(0, 4)
+    .map((t) => t.address);
+  const shareOfVoice = useShareOfVoice(address, peers);
 
   const token = data?.token;
   const positive = (token?.priceChange24h ?? 0) >= 0;
@@ -268,7 +277,11 @@ function TokenDetail() {
 
               <div className="space-y-4">
                 <SwapPanel token={token} />
-                <XSocialPanel address={token.address} symbol={token.symbol} />
+                <XSocialPanel
+                  address={token.address}
+                  symbol={token.symbol}
+                  shareOfVoice={shareOfVoice}
+                />
                 <LiveTrades trades={data.trades} />
               </div>
             </div>

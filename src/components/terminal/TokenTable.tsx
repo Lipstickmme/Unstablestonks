@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
+import { useWatchlist } from "@/lib/watchlist";
+import { QuickBuyModal } from "./QuickBuyModal";
 import {
   ArrowDown,
   ArrowUp,
@@ -13,6 +15,7 @@ import {
   Users,
   Rocket,
   Sparkles,
+  Star,
 } from "lucide-react";
 
 type SortKey =
@@ -131,19 +134,31 @@ export function TokenTable({
   tokens,
   loading,
   error,
+  initialQuery,
+  watchOnly,
 }: {
   tokens: TokenRow[];
   loading?: boolean;
   error?: boolean;
+  initialQuery?: string;
+  watchOnly?: boolean;
 }) {
   const { chain } = useChain();
+  const watchlist = useWatchlist();
   const [sort, setSort] = useState<SortKey>("vol24h");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [filter, setFilter] = useState<Filter>("all");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery ?? "");
+  const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
+
+  // Reflect a search submitted from the header.
+  useEffect(() => {
+    if (initialQuery !== undefined) setQuery(initialQuery);
+  }, [initialQuery]);
 
   const rows = useMemo(() => {
     let r = tokens;
+    if (watchOnly) r = r.filter((t) => watchlist.has(t.address));
     if (filter !== "all") r = r.filter((t) => t.status.includes(filter));
     if (query) {
       const q = query.toLowerCase();
@@ -160,7 +175,7 @@ export function TokenTable({
       const bv = val(b);
       return dir === "desc" ? bv - av : av - bv;
     });
-  }, [tokens, sort, dir, filter, query]);
+  }, [tokens, sort, dir, filter, query, watchOnly, watchlist]);
 
   function toggleSort(k: SortKey) {
     if (sort === k) setDir(dir === "desc" ? "asc" : "desc");
@@ -259,11 +274,13 @@ export function TokenTable({
             {rows.length === 0 && (
               <tr>
                 <td colSpan={11} className="px-4 py-16 text-center text-sm text-muted-foreground">
-                  {loading
-                    ? "Loading live tokens from DEX indexers + block explorer…"
-                    : error
-                      ? "Couldn't reach the data sources for this chain. Retrying automatically."
-                      : "No tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
+                  {watchOnly
+                    ? "Your watchlist is empty. Tap the ☆ on any token to add it."
+                    : loading
+                      ? "Loading live tokens from DEX indexers + block explorer…"
+                      : error
+                        ? "Couldn't reach the data sources for this chain. Retrying automatically."
+                        : "No tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
                 </td>
               </tr>
             )}
@@ -320,6 +337,25 @@ export function TokenTable({
                         >
                           <ExternalLink className="h-3 w-3" />
                         </a>
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            watchlist.toggle(t.address);
+                          }}
+                          title={
+                            watchlist.has(t.address) ? "Remove from watchlist" : "Add to watchlist"
+                          }
+                          className={`transition-opacity hover:text-foreground ${
+                            watchlist.has(t.address)
+                              ? "text-primary opacity-100"
+                              : "opacity-0 group-hover:opacity-100"
+                          }`}
+                        >
+                          <Star
+                            className={`h-3 w-3 ${watchlist.has(t.address) ? "fill-current" : ""}`}
+                          />
+                        </button>
                       </div>
                     </div>
                   </Link>
@@ -356,19 +392,20 @@ export function TokenTable({
                   </div>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <Link
-                    to="/token/$address"
-                    params={{ address: t.address }}
+                  <button
+                    onClick={() => setBuyToken(t)}
                     className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
                   >
                     <Zap className="h-3 w-3" /> Buy
-                  </Link>
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {buyToken && <QuickBuyModal token={buyToken} onClose={() => setBuyToken(null)} />}
     </section>
   );
 }

@@ -114,7 +114,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     key: "stable",
     id: 988,
     name: "Stable",
-    shortName: "USDT0",
+    shortName: "USDC",
     badge: "S",
     network: "mainnet",
     live: true,
@@ -130,7 +130,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     wrappedNative: env("VITE_WNATIVE_STABLE") as `0x${string}` | undefined,
     router: routerFromEnv("STABLE"),
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
-    tagline: "Tether L1 · USDT-native gas · sub-second finality",
+    tagline: "Circle CCTP · cross-chain USDC transfers",
   },
   arc: {
     key: "arc",
