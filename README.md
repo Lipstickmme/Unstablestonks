@@ -6,11 +6,11 @@ no mock feeds.
 
 ## Chains
 
-| Tab                 | What it is                                                                       |
-| ------------------- | -------------------------------------------------------------------------------- |
-| **Robinhood Chain** | Launchpad terminal (4663) — RPC + Blockscout + GeckoTerminal pool data           |
-| **Stable**          | Cross-chain USDC transfers via Circle CCTP (`@stable-io/sdk`)                     |
-| **Arc** (Circle)    | Launchpad terminal (5042002, testnet) — RPC + ArcScan                            |
+| Chain               | ID      | Gas  | Data                                                     | Status  |
+| ------------------- | ------- | ---- | -------------------------------------------------------- | ------- |
+| **Robinhood Chain** | 4663    | ETH  | RPC + Blockscout + GeckoTerminal pools                   | mainnet |
+| **Stable**          | 988     | USDT0 | RPC + Blockscout (`blockscout.stable.xyz`) — Tether's L1 | mainnet |
+| **Arc** (Circle)    | 5042002 | USDC | RPC + ArcScan                                            | testnet |
 
 The active chain is stored in `localStorage` and reskins the UI via a per-chain accent.
 

@@ -238,7 +238,7 @@ async function crawlCached(query: string): Promise<XSocialResult> {
 }
 
 export const searchXSocial = createServerFn({ method: "GET" })
-  .inputValidator((raw: unknown): { query: string } => {
+  .validator((raw: unknown): { query: string } => {
     const q = typeof raw === "object" && raw ? (raw as { query?: unknown }).query : raw;
     const query = String(q ?? "")
       .trim()
@@ -253,7 +253,7 @@ export const searchXSocial = createServerFn({ method: "GET" })
  * request, sequential upstream calls + server-side cache to respect rate limits.
  */
 export const searchXSocialBatch = createServerFn({ method: "GET" })
-  .inputValidator((raw: unknown): { queries: string[] } => {
+  .validator((raw: unknown): { queries: string[] } => {
     const q = typeof raw === "object" && raw ? (raw as { queries?: unknown }).queries : raw;
     const queries = (Array.isArray(q) ? q : [])
       .map((v) => String(v ?? "").trim())
