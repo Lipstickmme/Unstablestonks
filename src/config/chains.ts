@@ -101,10 +101,17 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     explorer: { kind: "blockscout", apiBase: "https://robinhoodchain.blockscout.com/api/v2" },
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     gasToken: "ETH",
-    // Canonical WETH on Robinhood Chain (verified via Uniswap deployment docs).
+    // Canonical WETH on Robinhood Chain (from Uniswap's official SDK).
     wrappedNative: (env("VITE_WNATIVE_ROBINHOOD") ??
-      "0x7943e237c7F95DA44E0301572D358911207852Fa") as `0x${string}`,
-    router: routerFromEnv("ROBINHOOD"),
+      "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73") as `0x${string}`,
+    // Uniswap V3 on Robinhood (SwapRouter02 + QuoterV2, from the Uniswap SDK).
+    // Default fee tier 1% — launchpad/memecoin pools; quoter probes other tiers.
+    router: routerFromEnv("ROBINHOOD") ?? {
+      kind: "uniswapV3",
+      address: "0xcaf681a66d020601342297493863e78c959e5cb2",
+      quoter: "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7",
+      feeTier: 10000,
+    },
     // Robinhood Chain is indexed by GeckoTerminal — unlocks DEX prices/vol/trades.
     geckoterminalNetwork: "robinhood",
     accent: "oklch(0.87 0.19 128)", // Robinhood lime/green
@@ -156,7 +163,14 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     gasToken: "USDC",
     stablecoin: { symbol: "USDC", decimals: 6 },
     wrappedNative: env("VITE_WNATIVE_ARC") as `0x${string}` | undefined,
-    router: routerFromEnv("ARC"),
+    // Uniswap V3 on Arc (from the Uniswap SDK). Swaps enable once the wrapped
+    // native (wrapped USDC) is set via VITE_WNATIVE_ARC.
+    router: routerFromEnv("ARC") ?? {
+      kind: "uniswapV3",
+      address: "0x53bf6b0684ec7ef91e1387da3d1a1769bc5a6f77",
+      quoter: "0x7dfd4f31be6814d2906bde155c3e1b146eac1468",
+      feeTier: 3000,
+    },
     accent: "oklch(0.72 0.16 250)", // Circle blue
     tagline: "Circle L1 · USDC-native gas · testnet",
   },

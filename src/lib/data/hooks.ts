@@ -13,6 +13,7 @@ import {
   fetchNetworkPools,
   fetchOhlcv,
   fetchPoolTrades,
+  fetchTokenInfo,
   fetchTokenMarket,
   fetchTokenPools,
 } from "./geckoterminal";
@@ -147,10 +148,11 @@ async function loadTokenDetail(
     };
   }
 
-  // 3. DEX market enrichment + venue labels when the chain is indexed.
-  const [market, pools] = await Promise.all([
+  // 3. DEX market enrichment + venue labels + token info when indexed.
+  const [market, pools, info] = await Promise.all([
     fetchTokenMarket(chain, addr).catch(() => null),
     fetchTokenPools(chain, addr).catch(() => []),
+    fetchTokenInfo(chain, addr).catch(() => null),
   ]);
   if (market) {
     token.price = market.price || token.price;
@@ -161,6 +163,14 @@ async function loadTokenDetail(
     token.liquidityUsd = market.liquidityUsd;
     token.priceSource = "geckoterminal";
     token.indexed = true;
+  }
+  if (info) {
+    // Fill gaps left by the explorer (esp. Stable, which has no Blockscout list).
+    if (!token.holders && info.holders) token.holders = info.holders;
+    if (!token.logoUrl && info.logoUrl) token.logoUrl = info.logoUrl;
+    if (info.socials.twitter || info.socials.telegram || info.socials.website) {
+      token.socials = { ...token.socials, ...info.socials };
+    }
   }
   if (pools.length) {
     token.dexName = pools[0].dexName;

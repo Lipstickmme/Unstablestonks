@@ -12,11 +12,12 @@ import { getErc20Allowance, getPublicClient } from "./data/rpc";
 // Quick-swap engine with protocol fee collection.
 //
 // Every swap collects PLATFORM_FEE_BPS of the INPUT into FEE_RECIPIENT and routes
-// the remainder through the chain's configured DEX router (Uniswap-V2 interface).
-// The fee leg is a plain transfer, so treasury collection works on ANY chain; the
-// DEX leg activates per chain once a router + wrapped-native are configured
-// (via VITE_ROUTER_<CHAIN> / VITE_WNATIVE_<CHAIN>). We never hardcode an
-// unverified router — routing funds through the wrong address would lose them.
+// the remainder through the chain's DEX router (Uniswap V2 or V3 interface).
+// The fee leg is a plain transfer, so treasury collection works on ANY chain.
+// Verified router/wrapped-native addresses (Robinhood, Arc — from Uniswap's
+// official SDK) ship as defaults; any chain can be overridden via
+// VITE_ROUTER_<CHAIN> / VITE_WNATIVE_<CHAIN>. We never hardcode an UNVERIFIED
+// router (e.g. Stable, pending its published address) — a wrong router loses funds.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const V2_ROUTER_ABI = [
@@ -143,6 +144,8 @@ export interface SwapQuote {
   minOut: number;
   feeAmount: number; // in input units
   routerReady: boolean;
+  /** V3 fee tier the quote resolved to — reused for execution. */
+  feeTier?: number;
 }
 
 export function swapEnabled(cfg: ChainConfig): boolean {
@@ -184,12 +187,14 @@ export async function quoteSwap(
   const path = side === "buy" ? [wnative, token] : [token, wnative];
   const outDecimals = side === "buy" ? tokenDecimals : nativeDecimals;
 
+  const amountInWei = parseUnits(swapAmount.toString(), inDecimals);
+
   try {
     const client = getPublicClient(chainKey);
-    let outWei: bigint;
+    let outWei = 0n;
+    let usedFeeTier: number | undefined;
 
     if (routerCfg.kind === "uniswapV3") {
-      // V3: QuoterV2.quoteExactInputSingle, simulated off-chain.
       if (!routerCfg.quoter) {
         return {
           ok: false,
@@ -200,39 +205,61 @@ export async function quoteSwap(
           routerReady: false,
         };
       }
-      const sim = await client.simulateContract({
-        address: routerCfg.quoter,
-        abi: QUOTER_V2_ABI,
-        functionName: "quoteExactInputSingle",
-        args: [
-          {
-            tokenIn: path[0],
-            tokenOut: path[1],
-            amountIn: parseUnits(swapAmount.toString(), inDecimals),
-            fee: routerCfg.feeTier ?? 3000,
-            sqrtPriceLimitX96: 0n,
-          },
-        ],
-      });
-      outWei = (sim.result as readonly [bigint, bigint, number, bigint])[0];
+      // Probe the common fee tiers (configured one first) and keep the best pool.
+      const preferred = routerCfg.feeTier ?? 3000;
+      const tiers = [preferred, 10000, 3000, 500, 100].filter((t, i, a) => a.indexOf(t) === i);
+      for (const fee of tiers) {
+        try {
+          const sim = await client.simulateContract({
+            address: routerCfg.quoter,
+            abi: QUOTER_V2_ABI,
+            functionName: "quoteExactInputSingle",
+            args: [
+              {
+                tokenIn: path[0],
+                tokenOut: path[1],
+                amountIn: amountInWei,
+                fee,
+                sqrtPriceLimitX96: 0n,
+              },
+            ],
+          });
+          const out = (sim.result as readonly [bigint, bigint, number, bigint])[0];
+          if (out > outWei) {
+            outWei = out;
+            usedFeeTier = fee;
+          }
+        } catch {
+          /* no pool at this tier — try the next */
+        }
+      }
+      if (outWei === 0n) {
+        return {
+          ok: false,
+          reason: "No V3 pool with liquidity found for this pair.",
+          amountOut: 0,
+          minOut: 0,
+          feeAmount,
+          routerReady: true,
+        };
+      }
     } else {
-      // V2: router.getAmountsOut along the wrapped-native path.
       const amounts = (await client.readContract({
         address: router,
         abi: V2_ROUTER_ABI,
         functionName: "getAmountsOut",
-        args: [parseUnits(swapAmount.toString(), inDecimals), path],
+        args: [amountInWei, path],
       })) as bigint[];
       outWei = amounts[amounts.length - 1];
     }
 
     const amountOut = Number(formatUnits(outWei, outDecimals));
     const minOut = amountOut * (1 - slippageBps / 10_000);
-    return { ok: true, amountOut, minOut, feeAmount, routerReady: true };
+    return { ok: true, amountOut, minOut, feeAmount, routerReady: true, feeTier: usedFeeTier };
   } catch (e) {
     return {
       ok: false,
-      reason: e instanceof Error ? `Quote failed: ${e.message}` : "Quote failed",
+      reason: e instanceof Error ? `Quote failed: ${e.message.split("\n")[0]}` : "Quote failed",
       amountOut: 0,
       minOut: 0,
       feeAmount,
@@ -260,6 +287,8 @@ export async function executeSwap(params: {
   token: `0x${string}`;
   tokenDecimals: number;
   minOut: number;
+  /** Fee tier chosen by the quote (V3). Falls back to the router default. */
+  feeTier?: number;
 }): Promise<SwapExecution> {
   const { chainKey, walletClient, account, side, amountIn, token, tokenDecimals, minOut } = params;
   const cfg = CHAINS[chainKey];
@@ -269,7 +298,7 @@ export async function executeSwap(params: {
   const routerCfg = cfg.router!;
   const router = routerCfg.address;
   const isV3 = routerCfg.kind === "uniswapV3";
-  const feeTier = routerCfg.feeTier ?? 3000;
+  const feeTier = params.feeTier ?? routerCfg.feeTier ?? 3000;
   const nativeDecimals = cfg.nativeCurrency.decimals;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const result: SwapExecution = {};

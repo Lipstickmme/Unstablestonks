@@ -99,6 +99,48 @@ interface GtPoolsResp {
   included?: GtIncluded[];
 }
 
+interface GtTokenInfoResp {
+  data?: {
+    attributes?: {
+      image_url?: string | null;
+      description?: string | null;
+      websites?: string[];
+      twitter_handle?: string | null;
+      telegram_handle?: string | null;
+      discord_url?: string | null;
+      holders?: { count?: number | null } | null;
+    };
+  };
+}
+
+export interface TokenInfo {
+  holders: number;
+  logoUrl?: string;
+  socials: { twitter?: string; telegram?: string; website?: string };
+}
+
+/** Holder count + socials from GeckoTerminal's token-info endpoint (fills gaps
+ * on chains without a Blockscout token registry, e.g. Stable). */
+export async function fetchTokenInfo(cfg: ChainConfig, address: string): Promise<TokenInfo | null> {
+  if (!cfg.geckoterminalNetwork) return null;
+  const data = await gt<GtTokenInfoResp>(
+    `/networks/${cfg.geckoterminalNetwork}/tokens/${address}/info`,
+  );
+  const a = data?.data?.attributes;
+  if (!a) return null;
+  return {
+    holders: n(a.holders?.count),
+    logoUrl: a.image_url ?? undefined,
+    socials: {
+      twitter: a.twitter_handle ? `https://x.com/${a.twitter_handle.replace(/^@/, "")}` : undefined,
+      telegram: a.telegram_handle
+        ? `https://t.me/${a.telegram_handle.replace(/^@/, "")}`
+        : undefined,
+      website: a.websites?.[0],
+    },
+  };
+}
+
 /** Heuristic: DEX ids/names that identify bonding-curve launchpads vs regular DEXs. */
 const LAUNCHPAD_RE = /fun|pump|bags|launch|curve|pons|moon/i;
 
