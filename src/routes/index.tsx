@@ -4,7 +4,6 @@ import { Header } from "@/components/terminal/Header";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
-import { StableBridge } from "@/components/terminal/StableBridge";
 import { useChainStats, useTokens } from "@/lib/data/hooks";
 import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
@@ -64,19 +63,6 @@ function Terminal() {
       return h?.ok ? { ...t, socialHeat: h.heat } : t;
     });
   }, [tokensQ.data, heatQ.data]);
-
-  // The "Stable" chain is Circle-CCTP USDC transfers, not a launchpad — render
-  // the cross-chain bridge instead of the token terminal.
-  if (chain.key === "stable") {
-    return (
-      <div className="min-h-screen">
-        <Header />
-        <div className="mx-auto max-w-[1600px] px-3 py-4 sm:px-5 sm:py-5">
-          <StableBridge />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen">

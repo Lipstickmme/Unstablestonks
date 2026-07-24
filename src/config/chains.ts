@@ -114,23 +114,27 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     key: "stable",
     id: 988,
     name: "Stable",
-    shortName: "USDC",
+    shortName: "USDT0",
     badge: "S",
     network: "mainnet",
     live: true,
     rpcUrls: [env("VITE_RPC_STABLE") ?? "https://rpc.stable.xyz"],
+    // Primary explorer is Etherscan-powered (StableScan). For the token/stat
+    // feeds we use the Blockscout instance, which exposes a free /api/v2.
     explorerUrl: "https://stablescan.xyz",
     explorer: {
       kind: "blockscout",
-      apiBase: env("VITE_EXPLORER_API_STABLE") ?? "https://stablescan.xyz/api/v2",
+      apiBase: env("VITE_EXPLORER_API_STABLE") ?? "https://blockscout.stable.xyz/api/v2",
     },
-    nativeCurrency: { name: "Gas USDT", symbol: "gUSDT", decimals: 18 },
-    gasToken: "gUSDT",
-    stablecoin: { symbol: "USDT0", decimals: 6 },
+    nativeCurrency: { name: "Tether USD", symbol: "USDT0", decimals: 18 },
+    gasToken: "USDT0",
+    stablecoin: { symbol: "USDT0", decimals: 18 },
     wrappedNative: env("VITE_WNATIVE_STABLE") as `0x${string}` | undefined,
     router: routerFromEnv("STABLE"),
+    // GeckoTerminal slug when Stable gets DEX-indexed (override via env).
+    geckoterminalNetwork: env("VITE_GT_NETWORK_STABLE"),
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
-    tagline: "Circle CCTP · cross-chain USDC transfers",
+    tagline: "Tether L1 · USDT-native gas · sub-second finality",
   },
   arc: {
     key: "arc",
