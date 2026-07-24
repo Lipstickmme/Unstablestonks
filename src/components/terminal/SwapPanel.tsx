@@ -124,6 +124,7 @@ export function SwapPanel({
         token: tokenAddr,
         tokenDecimals,
         minOut: quote.minOut,
+        feeTier: quote.feeTier,
       });
       setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
       setStatus("Submitted. Track it on the explorer.");

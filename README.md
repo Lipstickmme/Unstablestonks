@@ -6,11 +6,11 @@ no mock feeds.
 
 ## Chains
 
-| Chain               | ID      | Gas   | Data                                                     | Status  |
-| ------------------- | ------- | ----- | -------------------------------------------------------- | ------- |
-| **Robinhood Chain** | 4663    | ETH   | RPC + Blockscout + GeckoTerminal pools                   | mainnet |
+| Chain               | ID      | Gas   | Data                                                      | Status  |
+| ------------------- | ------- | ----- | --------------------------------------------------------- | ------- |
+| **Robinhood Chain** | 4663    | ETH   | RPC + Blockscout + GeckoTerminal pools                    | mainnet |
 | **Stable**          | 988     | USDT0 | RPC + GeckoTerminal (DYORswap) + Blockscout — Tether's L1 | mainnet |
-| **Arc** (Circle)    | 5042002 | USDC  | RPC + ArcScan                                            | testnet |
+| **Arc** (Circle)    | 5042002 | USDC  | RPC + ArcScan                                             | testnet |
 
 The active chain is stored in `localStorage` and reskins the UI via a per-chain accent.
 
