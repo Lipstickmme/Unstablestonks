@@ -4,12 +4,22 @@ import { Header } from "@/components/terminal/Header";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
+import { StableBridge } from "@/components/terminal/StableBridge";
 import { useChainStats, useTokens } from "@/lib/data/hooks";
 import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
 
+interface HomeSearch {
+  q?: string;
+  view?: "all" | "watch";
+}
+
 export const Route = createFileRoute("/")({
+  validateSearch: (search: Record<string, unknown>): HomeSearch => ({
+    q: typeof search.q === "string" ? search.q : undefined,
+    view: search.view === "watch" ? "watch" : "all",
+  }),
   head: () => ({
     meta: [
       { title: "UnstableStonks — multichain launchpad terminal" },
@@ -30,6 +40,7 @@ export const Route = createFileRoute("/")({
 
 function Terminal() {
   const { chain } = useChain();
+  const { q, view } = Route.useSearch();
   const statsQ = useChainStats();
   const tokensQ = useTokens();
 
@@ -54,6 +65,19 @@ function Terminal() {
     });
   }, [tokensQ.data, heatQ.data]);
 
+  // The "Stable" chain is Circle-CCTP USDC transfers, not a launchpad — render
+  // the cross-chain bridge instead of the token terminal.
+  if (chain.key === "stable") {
+    return (
+      <div className="min-h-screen">
+        <Header />
+        <div className="mx-auto max-w-[1600px] px-3 py-4 sm:px-5 sm:py-5">
+          <StableBridge />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen">
       <Header />
@@ -69,7 +93,13 @@ function Terminal() {
 
         {/* Full-width launches table — live activity moved to the token page. */}
         <div className="fade-up" style={{ animationDelay: "120ms" }}>
-          <TokenTable tokens={tokens} loading={tokensQ.isLoading} error={tokensQ.isError} />
+          <TokenTable
+            tokens={tokens}
+            loading={tokensQ.isLoading}
+            error={tokensQ.isError}
+            initialQuery={q}
+            watchOnly={view === "watch"}
+          />
         </div>
 
         <div className="card-surface flex items-start gap-3 p-4 text-xs text-muted-foreground">

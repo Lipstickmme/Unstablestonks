@@ -15,10 +15,16 @@ import {
 } from "@/lib/swap";
 import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
 
-export function SwapPanel({ token }: { token: TokenRow }) {
+export function SwapPanel({
+  token,
+  defaultSide = "buy",
+}: {
+  token: TokenRow;
+  defaultSide?: "buy" | "sell";
+}) {
   const { chain, chainKey } = useChain();
   const wallet = useWallet();
-  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [side, setSide] = useState<"buy" | "sell">(defaultSide);
   const [amount, setAmount] = useState("");
   const [slipBps, setSlipBps] = useState(100);
   const [quote, setQuote] = useState<SwapQuote | null>(null);

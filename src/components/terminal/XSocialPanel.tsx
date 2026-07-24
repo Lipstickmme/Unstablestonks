@@ -1,15 +1,25 @@
-import { Flame, ExternalLink, Loader2 } from "lucide-react";
+import { Flame, ExternalLink, Loader2, Megaphone } from "lucide-react";
 import { formatNum } from "@/lib/format";
 import { useXSocial } from "@/lib/data/social";
 
 // Crawls X for real posts + reach about the contract address. Backed by the
 // server-side searchXSocial (official API when keyed, Nitter fallback). Reports
 // its own source/status honestly and never shows fabricated posts.
-export function XSocialPanel({ address, symbol }: { address: string; symbol: string }) {
+export function XSocialPanel({
+  address,
+  symbol,
+  shareOfVoice,
+}: {
+  address: string;
+  symbol: string;
+  /** 0..100 share of X mentions vs the chain's top tracked tokens (null = N/A). */
+  shareOfVoice?: number | null;
+}) {
   // Query on the exact contract address — that's what users paste in X posts.
   const { data, isLoading, isError } = useXSocial(address);
 
   const heat = data?.heat ?? 0;
+  const sov = shareOfVoice ?? null;
   const timeAgo = (ms: number) => {
     const s = Math.max(1, Math.floor((Date.now() - ms) / 1000));
     if (s < 60) return `${s}s`;
@@ -55,6 +65,27 @@ export function XSocialPanel({ address, symbol }: { address: string; symbol: str
           </div>
         </div>
       </div>
+
+      {/* Share of voice — this CA's mentions vs the chain's top tracked tokens */}
+      {data?.ok && sov != null && (
+        <div className="mt-3 rounded-lg border border-border bg-background p-2.5">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <Megaphone className="h-3 w-3" /> Share of voice
+            </span>
+            <span className="num font-medium text-foreground">{sov.toFixed(1)}%</span>
+          </div>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-secondary">
+            <div
+              className={`h-full bg-primary transition-all duration-700 ${sov > 25 ? "intel-glow" : ""}`}
+              style={{ width: `${Math.min(100, sov)}%` }}
+            />
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            of X mentions across the top tokens tracked on this chain
+          </div>
+        </div>
+      )}
 
       <div className="mt-3 space-y-2">
         {isLoading && (

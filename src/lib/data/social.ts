@@ -32,3 +32,20 @@ export function useXSocialHeatMap(addresses: string[]) {
     queryFn: () => searchXSocialBatch({ data: { queries: addresses } }),
   });
 }
+
+/**
+ * Share of voice for `address`: its X mentions as a % of total mentions across
+ * a peer set (address + up to 4 top peers on the chain). Returns null until the
+ * batch resolves or when there's no measurable chatter.
+ */
+export function useShareOfVoice(address: string | undefined, peers: string[]) {
+  const set = address
+    ? Array.from(new Set([address.toLowerCase(), ...peers.map((p) => p.toLowerCase())])).slice(0, 5)
+    : [];
+  const { data } = useXSocialHeatMap(set);
+  if (!address || !data) return null;
+  const total = Object.values(data).reduce((s, r) => s + (r?.mentions ?? 0), 0);
+  if (total <= 0) return null;
+  const mine = data[address.toLowerCase()]?.mentions ?? 0;
+  return (mine / total) * 100;
+}

@@ -13,6 +13,8 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
 import { WalletProvider } from "../lib/wallet";
+import { WatchlistProvider } from "../lib/watchlist";
+import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -124,7 +126,10 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <ChainProvider>
         <WalletProvider>
-          <Outlet />
+          <WatchlistProvider>
+            <Outlet />
+            <Toaster position="top-right" theme="dark" richColors />
+          </WatchlistProvider>
         </WalletProvider>
       </ChainProvider>
     </QueryClientProvider>
