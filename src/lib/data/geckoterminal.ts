@@ -6,23 +6,15 @@
 import type { ChainConfig } from "@/config/chains";
 import type { TokenRow, TradeEvent } from "../types";
 
+import { proxiedFetchJson } from "../net";
+
 const GT = "https://api.geckoterminal.com/api/v2";
 
 async function gt<T>(path: string, timeoutMs = 12_000): Promise<T | null> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${GT}${path}`, {
-      signal: ctrl.signal,
-      headers: { Accept: "application/json;version=20230302" },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
+  return proxiedFetchJson<T>(`${GT}${path}`, {
+    timeoutMs,
+    headers: { Accept: "application/json;version=20230302" },
+  });
 }
 
 const n = (v: unknown) => {

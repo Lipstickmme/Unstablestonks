@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
+import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
 import {
@@ -144,6 +145,7 @@ export function TokenTable({
   watchOnly?: boolean;
 }) {
   const { chain } = useChain();
+  const wallet = useWallet();
   const watchlist = useWatchlist();
   const [sort, setSort] = useState<SortKey>("vol24h");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
@@ -393,7 +395,13 @@ export function TokenTable({
                 </td>
                 <td className="px-4 py-3 text-right">
                   <button
-                    onClick={() => setBuyToken(t)}
+                    onClick={() => {
+                      // Kick off the wallet prompt from this real click (a user
+                      // gesture) so the wallet doesn't reject it, then open the
+                      // buy modal. No navigation to the token page.
+                      if (!wallet.address) void wallet.connect();
+                      setBuyToken(t);
+                    }}
                     className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
                   >
                     <Zap className="h-3 w-3" /> Buy
