@@ -1,34 +1,46 @@
-import { formatNum } from "@/lib/format";
+import { formatNum, formatUSD } from "@/lib/format";
 import type { ChainStats } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
 import { AnimatedNumber } from "./AnimatedNumber";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, TrendingDown, TrendingUp } from "lucide-react";
 
 interface Props {
   stats?: ChainStats;
   loading?: boolean;
+  /** Chain-wide 24h DEX volume, summed from live pool data. */
+  vol24h?: number;
+  /** % the current 6h run-rate is above/below the 24h average. */
+  vol24hChange?: number;
 }
 
 interface Tile {
   label: string;
   value?: number;
   format: (n: number) => string;
+  change?: number;
+  changeNote?: string;
 }
 
-export function StatsOverview({ stats, loading }: Props) {
+export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
   const { chain } = useChain();
 
   const gwei = (n: number) => `${n.toFixed(3)} gwei`;
   const pick = (n?: number) => (n && n > 0 ? n : undefined);
 
-  // Block height + gas are always real (straight off JSON-RPC). Total txns /
-  // addresses come from the explorer scrape and show "—" if it can't be parsed —
-  // never a fabricated value.
+  // 24h volume is summed from live pool data; its change is the current 6h
+  // run-rate vs the 24h average. Totals come from the explorer and show "—"
+  // when unavailable — never a fabricated value.
   const tiles: Tile[] = [
-    { label: "Block height", value: pick(stats?.blockNumber), format: formatNum },
-    { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
+    {
+      label: "24h volume",
+      value: pick(vol24h),
+      format: formatUSD,
+      change: vol24hChange,
+      changeNote: "6h run-rate vs 24h avg",
+    },
     { label: "Total transactions", value: pick(stats?.totalTransactions), format: formatNum },
     { label: "Total addresses", value: pick(stats?.totalAddresses), format: formatNum },
+    { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
   ];
 
   const updated = stats?.updatedAt ?? new Date();
@@ -69,22 +81,38 @@ export function StatsOverview({ stats, loading }: Props) {
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-4">
-        {tiles.map((t) => (
-          <div key={t.label} className="bg-surface p-4 sm:p-5">
-            <div className="text-xs text-muted-foreground">{t.label}</div>
-            <div className="num mt-2 text-2xl font-light tracking-tight sm:text-3xl md:text-4xl">
-              {t.value == null ? (
-                loading && !stats ? (
-                  <span className="text-muted-foreground/40">···</span>
+        {tiles.map((t) => {
+          const up = (t.change ?? 0) >= 0;
+          return (
+            <div key={t.label} className="bg-surface p-4 sm:p-5">
+              <div className="text-xs text-muted-foreground">{t.label}</div>
+              <div className="num mt-2 text-2xl font-light tracking-tight sm:text-3xl md:text-4xl">
+                {t.value == null ? (
+                  loading && !stats ? (
+                    <span className="text-muted-foreground/40">···</span>
+                  ) : (
+                    "—"
+                  )
                 ) : (
-                  "—"
-                )
-              ) : (
-                <AnimatedNumber value={t.value} format={t.format} />
+                  <AnimatedNumber value={t.value} format={t.format} />
+                )}
+              </div>
+              {t.value != null && t.change != null && isFinite(t.change) && (
+                <div
+                  className={`mt-1 flex items-center gap-1 text-[11px] ${up ? "text-bull" : "text-bear"}`}
+                  title={t.changeNote}
+                >
+                  {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                  <span className="num">
+                    {up ? "+" : ""}
+                    {t.change.toFixed(1)}%
+                  </span>
+                  <span className="text-muted-foreground">{t.changeNote}</span>
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <p className="mt-4 text-[11px] text-muted-foreground">

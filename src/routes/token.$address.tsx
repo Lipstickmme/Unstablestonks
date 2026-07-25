@@ -3,7 +3,6 @@ import { useState } from "react";
 import { Header } from "@/components/terminal/Header";
 import { SwapPanel } from "@/components/terminal/SwapPanel";
 import { PriceChart } from "@/components/terminal/PriceChart";
-import { CandleChart } from "@/components/terminal/CandleChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
@@ -13,15 +12,7 @@ import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import { useTokenDetail, useTokens, useTokenCandles, type ChartTimeframe } from "@/lib/data/hooks";
 import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
-import {
-  ArrowLeft,
-  CandlestickChart,
-  Copy,
-  ExternalLink,
-  LineChart,
-  Rocket,
-  Users,
-} from "lucide-react";
+import { ArrowLeft, Copy, ExternalLink, Rocket, Users } from "lucide-react";
 
 const TIMEFRAMES: { key: ChartTimeframe; label: string }[] = [
   { key: "minute", label: "1m" },
@@ -48,7 +39,6 @@ function TokenDetail() {
   const { chain } = useChain();
   const { data, isLoading, isError, error } = useTokenDetail(address);
   const [tf, setTf] = useState<ChartTimeframe>("hour");
-  const [chartKind, setChartKind] = useState<"line" | "candles">("candles");
   const candlesQ = useTokenCandles(data?.pool ?? null, tf);
   const candles = candlesQ.data ?? [];
 
@@ -190,23 +180,6 @@ function TokenDetail() {
                       )}
                     </div>
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                      {/* line ⇆ candlestick */}
-                      <div className="mr-1 flex items-center gap-0.5 rounded border border-border p-0.5">
-                        <button
-                          onClick={() => setChartKind("candles")}
-                          title="Candlestick"
-                          className={`rounded p-1 ${chartKind === "candles" ? "bg-secondary text-foreground" : "hover:text-foreground"}`}
-                        >
-                          <CandlestickChart className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={() => setChartKind("line")}
-                          title="Line"
-                          className={`rounded p-1 ${chartKind === "line" ? "bg-secondary text-foreground" : "hover:text-foreground"}`}
-                        >
-                          <LineChart className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
                       {TIMEFRAMES.map((t) => (
                         <button
                           key={t.key}
@@ -221,16 +194,12 @@ function TokenDetail() {
                     </div>
                   </div>
                   <div className="h-[260px] p-2 sm:h-[320px]">
-                    {candles.length > 1 ? (
-                      chartKind === "candles" ? (
-                        <CandleChart candles={candles} />
-                      ) : (
-                        <PriceChart points={closes} positive={positive} />
-                      )
+                    {closes.length > 1 ? (
+                      <PriceChart points={closes} positive={positive} />
                     ) : (
                       <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
                         {candlesQ.isLoading && data.pool
-                          ? "Loading live candles…"
+                          ? "Loading price history…"
                           : `Price history appears once a DEX indexes this pool on ${chain.name}. Live on-chain activity below still populates from the explorer.`}
                       </div>
                     )}

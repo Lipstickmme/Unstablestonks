@@ -141,8 +141,14 @@ export async function fetchTokenInfo(cfg: ChainConfig, address: string): Promise
   };
 }
 
-/** Heuristic: DEX ids/names that identify bonding-curve launchpads vs regular DEXs. */
-const LAUNCHPAD_RE = /fun|pump|bags|launch|curve|pons|moon|dyor/i;
+/**
+ * Bonding-curve launchpads. Deliberately STRICT: a generic AMM (Uniswap,
+ * DYORswap's swap venue, etc.) is not a launchpad, and mislabelling one made
+ * every pool read "on bonding curve". Only venues that actually run a curve
+ * belong here.
+ */
+const LAUNCHPAD_RE =
+  /(^|[-_])(pump|four|bags|boop|sunpump|moonshot)|\bfun\b|bonding|launchpad|(^|[-_])pad($|[-_])/i;
 
 function prettyDex(id: string): string {
   return id
@@ -163,9 +169,26 @@ export interface TokenPoolInfo {
   dexId: string;
   dexName: string;
   isLaunchpad: boolean;
+  /** Pool creation time (ms) — the token's real launch age. */
+  createdAtMs: number;
+  reserveUsd: number;
+  vol5m: number;
+  vol1h: number;
+  vol6h: number;
+  vol24h: number;
+  buys24h: number;
+  sells24h: number;
+  priceChange24h: number;
+  priceChange1h: number;
+  priceChange5m: number;
+  sparkline: number[];
 }
 
-/** Pools (with venue labels) a token trades in, best-liquidity first. */
+/**
+ * Pools a token trades in, best-liquidity first, with full market attributes.
+ * This is how rows that the chain-wide pools page didn't include (explorer-only
+ * tokens) get their venue, age, short-window volumes and trend backfilled.
+ */
 export async function fetchTokenPools(cfg: ChainConfig, address: string): Promise<TokenPoolInfo[]> {
   if (!cfg.geckoterminalNetwork) return [];
   const data = await gt<GtPoolsResp>(
@@ -180,14 +203,31 @@ export async function fetchTokenPools(cfg: ChainConfig, address: string): Promis
   return data.data
     .filter((p) => p.attributes?.address)
     .map((p) => {
+      const a = p.attributes!;
       const dexId = p.relationships?.dex?.data?.id ?? "";
+      const pc = a.price_change_percentage ?? {};
+      const vol = a.volume_usd ?? {};
+      const tx24 = a.transactions?.h24 ?? {};
       return {
-        pool: p.attributes!.address!,
+        pool: a.address!,
         dexId,
         dexName: dexNames.get(dexId) ?? prettyDex(dexId),
         isLaunchpad: LAUNCHPAD_RE.test(dexId),
+        createdAtMs: a.pool_created_at ? new Date(a.pool_created_at).getTime() : 0,
+        reserveUsd: n(a.reserve_in_usd),
+        vol5m: n(vol.m5),
+        vol1h: n(vol.h1),
+        vol6h: n(vol.h6),
+        vol24h: n(vol.h24),
+        buys24h: n(tx24.buys),
+        sells24h: n(tx24.sells),
+        priceChange24h: n(pc.h24),
+        priceChange1h: n(pc.h1),
+        priceChange5m: n(pc.m5),
+        sparkline: sparklineFrom(pc),
       };
-    });
+    })
+    .sort((x, y) => y.reserveUsd - x.reserveUsd);
 }
 
 /** Back-compat helper: first (deepest) pool address for a token. */
@@ -221,7 +261,10 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
   }
 
   const now = Date.now();
-  const byAddress = new Map<string, TokenRow & { _reserve: number }>();
+  const byAddress = new Map<
+    string,
+    TokenRow & { _reserve: number; _onCurve: boolean; _onDex: boolean }
+  >();
 
   const pools = [...(top?.data ?? []), ...(fresh?.data ?? [])];
   for (const p of pools) {
@@ -252,10 +295,12 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
       existing.vol24h += n(vol.h24);
       existing.buys24h += n(tx24.buys);
       existing.sells24h += n(tx24.sells);
-      if (isLaunchpad && !existing.launchpadName) existing.launchpadName = dexName;
-      if (!isLaunchpad && existing.launchpadName) existing.graduated = true;
-      if (isLaunchpad && existing.dexName && !LAUNCHPAD_RE.test(existing.dexName))
-        existing.graduated = true;
+      if (isLaunchpad) {
+        existing._onCurve = true;
+        if (!existing.launchpadName) existing.launchpadName = dexName;
+      } else {
+        existing._onDex = true;
+      }
       // Deeper pool wins as the primary venue/pricing source.
       if (reserve > existing._reserve) {
         existing._reserve = reserve;
@@ -279,6 +324,8 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
 
     byAddress.set(address, {
       _reserve: reserve,
+      _onCurve: isLaunchpad,
+      _onDex: !isLaunchpad,
       address,
       name: base?.attributes?.name ?? symbol,
       symbol,
@@ -318,13 +365,20 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
     });
   }
 
-  const rows = [...byAddress.values()].map(({ _reserve, ...row }) => {
+  const rows = [...byAddress.values()].map(({ _reserve, _onCurve, _onDex, ...row }) => {
     void _reserve;
-    if (row.graduated) {
+    // Graduated = it launched on a bonding curve AND now also trades on a
+    // regular AMM. Still on the curve = launchpad pool only. Everything else is
+    // a plain DEX listing and gets no curve/graduation label at all.
+    if (_onCurve && _onDex) {
+      row.graduated = true;
       row.graduationPct = 100;
       if (!row.status.includes("graduated")) row.status.push("graduated");
-    } else if (row.launchpadName) {
+    } else if (_onCurve) {
+      row.graduated = false;
       if (!row.status.includes("graduating")) row.status.push("graduating");
+    } else {
+      row.launchpadName = undefined;
     }
     return row;
   });
