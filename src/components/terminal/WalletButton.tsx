@@ -1,14 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Wallet, Copy, LogOut, ChevronDown } from "lucide-react";
+import { Wallet, Copy, LogOut, ChevronDown, ExternalLink, Smartphone } from "lucide-react";
 import { shortAddr } from "@/lib/format";
-import { useWallet, type DiscoveredWallet } from "@/lib/wallet";
+import { useChain } from "@/lib/chain-context";
+import {
+  useWallet,
+  isMobileDevice,
+  mobileWalletLinks,
+  DESKTOP_WALLET_LINKS,
+  type DiscoveredWallet,
+} from "@/lib/wallet";
 
 export function WalletButton() {
-  const { address, connect, disconnect, connecting, error, wallets, activeWalletName } =
-    useWallet();
+  const {
+    address,
+    connect,
+    disconnect,
+    connecting,
+    error,
+    wallets,
+    activeWalletName,
+    ensureChain,
+  } = useWallet();
+  const { chain } = useChain();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Mobile users with no injected provider need a deep-link handoff to a wallet app.
+  const isMobile = useMemo(() => isMobileDevice(), []);
+  const hasInjected = wallets.length > 0 || (typeof window !== "undefined" && !!window.ethereum);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -26,9 +46,14 @@ export function WalletButton() {
   async function handleConnect(w?: DiscoveredWallet) {
     setOpen(false);
     const addr = await connect(w);
-    if (addr) toast.success(`Connected ${shortAddr(addr)}`);
+    if (addr) {
+      toast.success(`Connected ${shortAddr(addr)}`);
+      // Nudge the wallet onto the active chain (default: Stable) right away.
+      ensureChain(chain).catch(() => {});
+    }
   }
 
+  // ── Connected ──────────────────────────────────────────────────────────────
   if (address) {
     return (
       <div className="relative" ref={ref}>
@@ -73,47 +98,84 @@ export function WalletButton() {
     );
   }
 
-  // Multiple wallets → picker; one/none → direct connect.
-  if (wallets.length > 1) {
-    return (
-      <div className="relative" ref={ref}>
-        <button
-          onClick={() => setOpen((o) => !o)}
-          disabled={connecting}
-          className="flex items-center gap-2 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-        >
-          <Wallet className="h-3.5 w-3.5" />
-          <span className="hidden xs:inline">{connecting ? "Connecting…" : "Connect"}</span>
-        </button>
-        {open && (
-          <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-xl border border-border bg-popover shadow-2xl">
-            <div className="border-b border-border px-3 py-2 text-[11px] text-muted-foreground">
-              Choose a wallet
-            </div>
-            {wallets.map((w) => (
-              <button
-                key={w.info.uuid}
-                onClick={() => handleConnect(w)}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
-              >
-                {w.info.icon && <img src={w.info.icon} alt="" className="h-4 w-4 rounded" />}
-                {w.info.name}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
+  // ── Not connected: decide what the dropdown offers ───────────────────────────
+  // If there are injected wallets, list them (or connect directly when there's one).
+  // Otherwise steer the user to install (desktop) or open in a wallet app (mobile).
+  const needsPicker = wallets.length > 1 || !hasInjected;
 
-  return (
+  const trigger = (
     <button
-      onClick={() => handleConnect()}
+      onClick={() => (needsPicker ? setOpen((o) => !o) : handleConnect(wallets[0]))}
       disabled={connecting}
       className="flex items-center gap-2 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
     >
       <Wallet className="h-3.5 w-3.5" />
       <span className="hidden xs:inline">{connecting ? "Connecting…" : "Connect"}</span>
     </button>
+  );
+
+  if (!needsPicker) return trigger;
+
+  return (
+    <div className="relative" ref={ref}>
+      {trigger}
+      {open && (
+        <div className="absolute right-0 z-50 mt-2 w-64 overflow-hidden rounded-xl border border-border bg-popover shadow-2xl">
+          {wallets.length > 0 ? (
+            <>
+              <div className="border-b border-border px-3 py-2 text-[11px] text-muted-foreground">
+                Choose a wallet
+              </div>
+              {wallets.map((w) => (
+                <button
+                  key={w.info.uuid}
+                  onClick={() => handleConnect(w)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
+                >
+                  {w.info.icon && <img src={w.info.icon} alt="" className="h-4 w-4 rounded" />}
+                  {w.info.name}
+                </button>
+              ))}
+            </>
+          ) : isMobile ? (
+            <>
+              <div className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-[11px] text-muted-foreground">
+                <Smartphone className="h-3 w-3" /> Open in a wallet app
+              </div>
+              {mobileWalletLinks().map((l) => (
+                <a
+                  key={l.name}
+                  href={l.href}
+                  onClick={() => setOpen(false)}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
+                >
+                  {l.name}
+                  <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                </a>
+              ))}
+            </>
+          ) : (
+            <>
+              <div className="border-b border-border px-3 py-2 text-[11px] text-muted-foreground">
+                No wallet detected — install one
+              </div>
+              {DESKTOP_WALLET_LINKS.map((l) => (
+                <a
+                  key={l.name}
+                  href={l.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => setOpen(false)}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
+                >
+                  {l.name}
+                  <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                </a>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

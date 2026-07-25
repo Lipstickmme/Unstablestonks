@@ -24,7 +24,12 @@ export function ChainSwitcher() {
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="live-dot" />
+        <span
+          className="grid h-4 w-4 flex-shrink-0 place-items-center rounded font-mono text-[10px] font-bold text-black"
+          style={{ background: chain.accent }}
+        >
+          {chain.badge}
+        </span>
         <span className="font-mono">{chain.shortName}</span>
         <span className="hidden sm:inline text-muted-foreground">· {chain.id}</span>
         <ChevronDown className="h-3 w-3 text-muted-foreground" />

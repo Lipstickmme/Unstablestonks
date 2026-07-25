@@ -26,6 +26,22 @@ export interface RouterConfig {
   quoter?: `0x${string}`;
 }
 
+/**
+ * The token every swap routes through (the DEX hop / quote asset) and how the
+ * INPUT side is funded on a buy:
+ *  - "native": send native gas as value; the router wraps it (classic WETH path).
+ *  - "erc20":  approve + pull the token via transferFrom, no native value. Used
+ *              when the gas token is itself an ERC-20 (e.g. USDT0 on Stable, whose
+ *              wrapped-native predeploy is a non-functional revert-stub).
+ */
+export interface Intermediary {
+  address: `0x${string}`;
+  decimals: number;
+  mode: "native" | "erc20";
+  /** Display symbol for the routing asset (e.g. "USDT0", "ETH"). */
+  symbol: string;
+}
+
 export interface ChainConfig {
   key: ChainKey;
   id: number;
@@ -46,6 +62,11 @@ export interface ChainConfig {
   wrappedNative?: `0x${string}`;
   /** Canonical stablecoin on the chain, used as a quote asset when known. */
   stablecoin?: { symbol: string; address?: `0x${string}`; decimals: number };
+  /**
+   * Explicit routing/quote token. When set, overrides the wrapped-native as the
+   * DEX hop — required on chains whose wrapped-native is unusable (Stable).
+   */
+  intermediary?: Intermediary;
   router?: RouterConfig;
   /** GeckoTerminal network slug, if the chain is indexed there. */
   geckoterminalNetwork?: string;
@@ -135,9 +156,33 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     },
     nativeCurrency: { name: "Tether USD", symbol: "USDT0", decimals: 18 },
     gasToken: "USDT0",
-    stablecoin: { symbol: "USDT0", decimals: 18 },
+    // USDT0 as an ERC-20 (6 decimals) — verified on-chain (symbol/decimals) and
+    // published by Stable. Shares the same underlying balance as the native gas.
+    stablecoin: {
+      symbol: "USDT0",
+      address: (env("VITE_USDT0_STABLE") ??
+        "0x779Ded0c9e1022225f8E0630b35a9b54bE713736") as `0x${string}`,
+      decimals: 6,
+    },
+    // Stable's canonical wrapped-native predeploy reverts on every call, so we do
+    // NOT use it. Route swaps through the USDT0 ERC-20 instead (mode "erc20").
     wrappedNative: env("VITE_WNATIVE_STABLE") as `0x${string}` | undefined,
-    router: routerFromEnv("STABLE"),
+    intermediary: {
+      address: (env("VITE_INTERMEDIARY_STABLE") ??
+        "0x779Ded0c9e1022225f8E0630b35a9b54bE713736") as `0x${string}`,
+      decimals: 6,
+      mode: "erc20",
+      symbol: "USDT0",
+    },
+    // Uniswap V3 on Stable — SwapRouter02 + QuoterV2 from the official Stable docs
+    // (docs.stable.xyz/en/reference/dexes). Router verified via router.factory()
+    // == the documented v3 factory. Overridable per env.
+    router: routerFromEnv("STABLE") ?? {
+      kind: "uniswapV3",
+      address: "0x32eaf9B5d5F2CD7361c5012890C943D7de84C22a",
+      quoter: "0xb070179E7032CdA868b53e6C1742F80c9e940d1A",
+      feeTier: 3000,
+    },
     // GeckoTerminal DEX index. "stable" follows the same lowercase-name slug that
     // works for Robinhood; if Stable is indexed there, the table fills with live
     // pool data. Harmless empty otherwise. Override via env if the slug differs.
@@ -176,11 +221,28 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
   },
 };
 
-export const CHAIN_ORDER: ChainKey[] = ["robinhood", "stable", "arc"];
-export const DEFAULT_CHAIN: ChainKey = "robinhood";
+export const CHAIN_ORDER: ChainKey[] = ["stable", "robinhood", "arc"];
+export const DEFAULT_CHAIN: ChainKey = "stable";
 
 export function getChain(key: ChainKey): ChainConfig {
   return CHAINS[key];
+}
+
+/**
+ * The token a swap routes through on a chain. Prefers an explicit `intermediary`
+ * (e.g. USDT0 on Stable); otherwise derives one from the wrapped-native, funded
+ * by sending native value (classic WETH path).
+ */
+export function getIntermediary(cfg: ChainConfig): Intermediary | undefined {
+  if (cfg.intermediary) return cfg.intermediary;
+  if (cfg.wrappedNative)
+    return {
+      address: cfg.wrappedNative,
+      decimals: cfg.nativeCurrency.decimals,
+      mode: "native",
+      symbol: cfg.nativeCurrency.symbol,
+    };
+  return undefined;
 }
 
 export function isChainKey(v: string | null | undefined): v is ChainKey {

@@ -1,6 +1,7 @@
-import { formatNum, formatUSD } from "@/lib/format";
+import { formatNum } from "@/lib/format";
 import type { ChainStats } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
+import { AnimatedNumber } from "./AnimatedNumber";
 import { ArrowUpRight } from "lucide-react";
 
 interface Props {
@@ -8,26 +9,28 @@ interface Props {
   loading?: boolean;
 }
 
+interface Tile {
+  label: string;
+  value?: number;
+  format: (n: number) => string;
+}
+
 export function StatsOverview({ stats, loading }: Props) {
   const { chain } = useChain();
 
-  const items = [
-    {
-      label: "24h transactions",
-      value: stats && stats.trades24h > 0 ? formatNum(stats.trades24h) : "—",
-    },
-    {
-      label: "Total addresses",
-      value: stats?.totalAddresses ? formatNum(stats.totalAddresses) : "—",
-    },
-    {
-      label: stats?.vol24h ? "24h DEX volume" : "Gas price",
-      value: stats?.vol24h
-        ? formatUSD(stats.vol24h)
-        : stats?.gasPriceGwei
-          ? `${stats.gasPriceGwei.toFixed(3)} gwei`
-          : "—",
-    },
+  const gwei = (n: number) => `${n.toFixed(3)} gwei`;
+  const pick = (n?: number) => (n && n > 0 ? n : undefined);
+
+  // Prefer the richer explorer totals (Stable scrape); fall back to on-chain.
+  const tiles: Tile[] = [
+    { label: "24h transactions", value: pick(stats?.trades24h), format: formatNum },
+    { label: "Total transactions", value: pick(stats?.totalTransactions), format: formatNum },
+    { label: "Total addresses", value: pick(stats?.totalAddresses), format: formatNum },
+    stats?.newAddresses24h
+      ? { label: "New addresses 24h", value: pick(stats.newAddresses24h), format: formatNum }
+      : stats?.tokensTotal
+        ? { label: "Tokens", value: pick(stats.tokensTotal), format: formatNum }
+        : { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
   ];
 
   const updated = stats?.updatedAt ?? new Date();
@@ -67,12 +70,20 @@ export function StatsOverview({ stats, loading }: Props) {
         </a>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-3">
-        {items.map((it) => (
-          <div key={it.label} className="bg-surface p-5">
-            <div className="text-xs text-muted-foreground">{it.label}</div>
-            <div className="num mt-2 text-3xl font-light tracking-tight sm:text-4xl md:text-5xl">
-              {loading && !stats ? <span className="text-muted-foreground/40">···</span> : it.value}
+      <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-4">
+        {tiles.map((t) => (
+          <div key={t.label} className="bg-surface p-4 sm:p-5">
+            <div className="text-xs text-muted-foreground">{t.label}</div>
+            <div className="num mt-2 text-2xl font-light tracking-tight sm:text-3xl md:text-4xl">
+              {t.value == null ? (
+                loading && !stats ? (
+                  <span className="text-muted-foreground/40">···</span>
+                ) : (
+                  "—"
+                )
+              ) : (
+                <AnimatedNumber value={t.value} format={t.format} />
+              )}
             </div>
           </div>
         ))}
