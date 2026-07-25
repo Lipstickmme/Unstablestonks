@@ -35,7 +35,7 @@ export interface XSocialResult {
   engagement: number;
   /** 0..100 heat score derived from real volume/reach. */
   heat: number;
-  source: "x-api" | "nitter" | "unavailable";
+  source: "x-api" | "nitter" | "crawler" | "unavailable";
   ok: boolean;
   note?: string;
 }
@@ -50,17 +50,25 @@ function serverEnv(key: string): string | undefined {
   }
 }
 
+// Free, key-less mirrors. More instances = more resilience to rate limits and
+// dead hosts; each is tried in turn (and each through the CORS/reader proxies).
 const DEFAULT_NITTER = [
   "https://nitter.net",
   "https://nitter.poast.org",
   "https://nitter.privacyredirect.com",
+  "https://nitter.tiekoetter.com",
+  "https://nitter.space",
+  "https://xcancel.com",
+  "https://lightbrd.com",
 ];
 
 function heatFrom(mentions: number, impressions: number, unique: number): number {
   // Log-scaled blend so a handful of posts still registers but virality dominates.
+  // When reach is unknown (crawler sources) mentions + unique accounts carry it.
   const m = Math.log10(1 + mentions) / Math.log10(1 + 200); // ~200 posts => 1
   const i = Math.log10(1 + impressions) / Math.log10(1 + 2_000_000); // ~2M views => 1
   const u = Math.log10(1 + unique) / Math.log10(1 + 100);
+  if (impressions <= 0) return Math.min(100, Math.round((0.65 * m + 0.35 * u) * 100));
   return Math.min(100, Math.round((0.35 * m + 0.45 * i + 0.2 * u) * 100));
 }
 
@@ -190,6 +198,63 @@ async function viaNitter(query: string, instances: string[]): Promise<XSocialRes
   return null;
 }
 
+/**
+ * Last-resort free crawler: read X's own live-search page (and public search
+ * engines scoped to x.com) through the reader proxy and count posts that mention
+ * the contract address. No key, no rate-limited API — just mention counting,
+ * which is exactly the signal we need. Reach/impressions stay 0 (unknowable
+ * without the API) and the UI reports the source honestly.
+ */
+async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
+  const encoded = encodeURIComponent(`"${query}"`);
+  const sources = [
+    `https://x.com/search?q=${encoded}&f=live`,
+    `https://duckduckgo.com/html/?q=${encoded}+site%3Ax.com`,
+    `https://search.marcia.cc/search?q=${encoded}+site%3Ax.com`,
+    `https://www.bing.com/search?q=${encoded}+site%3Ax.com`,
+  ];
+
+  for (const url of sources) {
+    const text = await proxiedFetchText(url, { timeoutMs: 9_000 });
+    if (!text || text.length < 200) continue;
+
+    // Collect the handles appearing alongside the CA — unique accounts talking.
+    const handles = new Set<string>();
+    for (const m of text.matchAll(
+      /(?:x\.com|twitter\.com)\/([A-Za-z0-9_]{2,15})(?:\/status\/\d+)?/g,
+    )) {
+      const h = m[1].toLowerCase();
+      if (!["search", "i", "home", "explore", "intent", "share", "hashtag"].includes(h)) {
+        handles.add(m[1]);
+      }
+    }
+    // Distinct status links ≈ distinct posts mentioning the CA.
+    const statuses = new Set([...text.matchAll(/status\/(\d{8,25})/g)].map((m) => m[1]));
+    // Fall back to counting literal CA occurrences when links are stripped.
+    const literal = (text.match(new RegExp(escapeRe(query), "gi")) ?? []).length;
+    const mentions = statuses.size || Math.max(0, Math.min(literal, 200));
+    if (mentions === 0) continue;
+
+    return {
+      query,
+      posts: [],
+      mentions,
+      uniqueAccounts: handles.size,
+      impressions: 0,
+      engagement: 0,
+      heat: heatFrom(mentions, 0, handles.size),
+      source: "crawler",
+      ok: true,
+      note: "Mention count from a public crawl — reach unavailable without X_BEARER_TOKEN.",
+    };
+  }
+  return null;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function crawlOne(query: string): Promise<XSocialResult> {
   const bearer = serverEnv("X_BEARER_TOKEN");
   if (bearer) {
@@ -204,6 +269,10 @@ async function crawlOne(query: string): Promise<XSocialResult> {
       .filter(Boolean) ?? DEFAULT_NITTER;
   const nitter = await viaNitter(query, instances);
   if (nitter) return nitter;
+
+  // Every mirror rate-limited/down → count mentions via an open crawl.
+  const crawled = await viaOpenCrawl(query);
+  if (crawled) return crawled;
 
   return {
     query,

@@ -37,7 +37,8 @@ export function XSocialPanel({
         </div>
         {data?.source && data.source !== "unavailable" && (
           <span className="chip !py-0 text-[9px]">
-            via {data.source === "x-api" ? "X API" : "Nitter"}
+            via{" "}
+            {data.source === "x-api" ? "X API" : data.source === "nitter" ? "Nitter" : "crawler"}
           </span>
         )}
       </div>

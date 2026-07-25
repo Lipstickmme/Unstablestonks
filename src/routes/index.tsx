@@ -4,7 +4,9 @@ import { Header } from "@/components/terminal/Header";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
-import { useChainStats, useTokens, useHolderCounts } from "@/lib/data/hooks";
+import { WhaleWatch } from "@/components/terminal/WhaleWatch";
+import { BundleWatch } from "@/components/terminal/BundleWatch";
+import { useChainStats, useTokens, useRowEnrichment, useChainTrades } from "@/lib/data/hooks";
 import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
@@ -53,22 +55,56 @@ function Terminal() {
     [tokensQ.data],
   );
   const heatQ = useXSocialHeatMap(topAddresses);
-  const holdersQ = useHolderCounts(tokensQ.data);
+  const enrichQ = useRowEnrichment(tokensQ.data);
 
   const tokens = useMemo(() => {
     const rows = tokensQ.data ?? [];
     const heat = heatQ.data;
-    const holders = holdersQ.data;
-    if (!heat && !holders) return rows;
+    const enrich = enrichQ.data;
+    if (!heat && !enrich) return rows;
     return rows.map((t) => {
       const h = heat?.[t.address];
-      const hc = holders?.[t.address];
+      const e = enrich?.[t.address];
       const next = { ...t };
       if (h?.ok) next.socialHeat = h.heat;
-      if (hc && !next.holders) next.holders = hc;
+      if (e) {
+        // Backfill only what the row is actually missing — never overwrite live
+        // pool data with the enrichment pass.
+        if (e.holders && !next.holders) next.holders = e.holders;
+        if (e.dexName && !next.dexName) next.dexName = e.dexName;
+        if (e.launchpadName && !next.launchpadName) {
+          next.launchpadName = e.launchpadName;
+          next.graduated = e.graduated;
+          next.graduationPct = e.graduated ? 100 : 0;
+          next.status = [...next.status, e.graduated ? "graduated" : "graduating"];
+        }
+        if (e.ageMinutes != null && next.ageMinutes < 0) next.ageMinutes = e.ageMinutes;
+        if (e.vol5m && !next.vol5m) next.vol5m = e.vol5m;
+        if (e.vol1h && !next.vol1h) next.vol1h = e.vol1h;
+        if (e.vol6h && !next.vol6h) next.vol6h = e.vol6h;
+        if (e.buys24h && !next.buys24h) next.buys24h = e.buys24h;
+        if (e.sells24h && !next.sells24h) next.sells24h = e.sells24h;
+        if (e.sparkline && !next.sparkline) {
+          next.sparkline = e.sparkline;
+          next.priceChange24h = e.priceChange24h ?? next.priceChange24h;
+          next.priceSource = "geckoterminal";
+        }
+      }
       return next;
     });
-  }, [tokensQ.data, heatQ.data, holdersQ.data]);
+  }, [tokensQ.data, heatQ.data, enrichQ.data]);
+
+  // Chain-wide 24h volume + whether the current run-rate is rising or falling.
+  const volume = useMemo(() => {
+    const total24h = tokens.reduce((s, t) => s + (t.vol24h || 0), 0);
+    const total6h = tokens.reduce((s, t) => s + (t.vol6h || 0), 0);
+    // 6h run-rate annualised to 24h vs the actual 24h figure = momentum.
+    const change = total24h > 0 && total6h > 0 ? ((total6h * 4) / total24h - 1) * 100 : undefined;
+    return { total24h, change };
+  }, [tokens]);
+
+  const tradesQ = useChainTrades(tokens);
+  const chainTrades = tradesQ.data ?? [];
 
   return (
     <div className="min-h-screen">
@@ -76,11 +112,25 @@ function Terminal() {
 
       <div className="mx-auto max-w-[1600px] space-y-4 px-3 py-4 sm:px-5 sm:py-5">
         <div className="fade-up">
-          <StatsOverview stats={statsQ.data} loading={statsQ.isLoading} />
+          <StatsOverview
+            stats={statsQ.data}
+            loading={statsQ.isLoading}
+            vol24h={volume.total24h}
+            vol24hChange={volume.change}
+          />
         </div>
 
         <div className="fade-up" style={{ animationDelay: "60ms" }}>
           <HotSignals tokens={tokens} />
+        </div>
+
+        {/* Chain-wide flow intelligence over the busiest pools' real swaps. */}
+        <div
+          className="fade-up grid grid-cols-1 gap-4 md:grid-cols-2"
+          style={{ animationDelay: "90ms" }}
+        >
+          <BundleWatch trades={chainTrades} />
+          <WhaleWatch trades={chainTrades} />
         </div>
 
         {/* Full-width launches table — live activity moved to the token page. */}

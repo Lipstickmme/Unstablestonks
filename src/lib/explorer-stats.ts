@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { proxiedFetchText } from "./net";
+import { proxiedFetchJson, proxiedFetchText } from "./net";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Explorer overview stats (Stable). StableScan is Etherscan-powered and its
@@ -74,6 +74,40 @@ function statValue(text: string, label: RegExp, floor: number): number | undefin
   return isFinite(best) && best >= floor ? best : undefined;
 }
 
+interface BlockscoutStats {
+  total_blocks?: string;
+  total_transactions?: string;
+  total_addresses?: string;
+  transactions_today?: string;
+}
+
+/**
+ * Blockscout's /stats endpoint carries the network totals directly. Try the
+ * known instances for the chain before falling back to scraping a page.
+ */
+async function viaBlockscout(hosts: string[]): Promise<ExplorerStats> {
+  for (const host of hosts) {
+    const json = await proxiedFetchJson<BlockscoutStats>(`${host}/api/v2/stats`, {
+      timeoutMs: 9_000,
+      headers: { Accept: "application/json" },
+    });
+    if (!json) continue;
+    const num = (v?: string) => {
+      const x = v ? parseFloat(v.replace(/,/g, "")) : NaN;
+      return isFinite(x) && x > 0 ? x : undefined;
+    };
+    const stats: ExplorerStats = {
+      totalTransactions: num(json.total_transactions),
+      totalAddresses: num(json.total_addresses),
+      transactions24h: num(json.transactions_today),
+      ok: false,
+    };
+    stats.ok = Boolean(stats.totalTransactions || stats.totalAddresses);
+    if (stats.ok) return stats;
+  }
+  return { ok: false };
+}
+
 async function scrapeStableScan(): Promise<ExplorerStats> {
   const key = apiKey();
   const pages = [
@@ -100,15 +134,35 @@ async function scrapeStableScan(): Promise<ExplorerStats> {
   return { ok: false };
 }
 
-// Short server-side cache so refreshes don't re-scrape every tick.
-let cache: { ts: number; data: ExplorerStats } | null = null;
+/** Known Blockscout hosts per chain, tried before any page scraping. */
+const BLOCKSCOUT_HOSTS: Record<string, string[]> = {
+  stable: ["https://blockscout.stable.xyz", "https://explorer.stable.xyz"],
+  robinhood: ["https://robinhoodchain.blockscout.com"],
+  arc: ["https://testnet.arcscan.app"],
+};
+
+// Short server-side cache so refreshes don't re-fetch every tick.
+const cache = new Map<string, { ts: number; data: ExplorerStats }>();
 const TTL = 60_000;
 
-export const fetchStableScanStats = createServerFn({ method: "GET" }).handler(
-  async (): Promise<ExplorerStats> => {
-    if (cache && Date.now() - cache.ts < TTL) return cache.data;
-    const data = await scrapeStableScan();
-    if (data.ok) cache = { ts: Date.now(), data };
-    return data;
-  },
-);
+/**
+ * Network totals for a chain: Blockscout's /stats endpoint first (structured and
+ * exact), then the explorer page scrape for chains whose primary explorer is
+ * Etherscan-style (Stable). Returns ok:false rather than guessing.
+ */
+export const fetchExplorerStats = createServerFn({ method: "GET" })
+  .validator((raw: unknown): { chain: string } => {
+    const c = typeof raw === "object" && raw ? (raw as { chain?: unknown }).chain : raw;
+    return { chain: String(c ?? "").trim() || "stable" };
+  })
+  .handler(async ({ data }): Promise<ExplorerStats> => {
+    const { chain } = data;
+    const hit = cache.get(chain);
+    if (hit && Date.now() - hit.ts < TTL) return hit.data;
+
+    let stats = await viaBlockscout(BLOCKSCOUT_HOSTS[chain] ?? []);
+    if (!stats.ok && chain === "stable") stats = await scrapeStableScan();
+
+    if (stats.ok) cache.set(chain, { ts: Date.now(), data: stats });
+    return stats;
+  });

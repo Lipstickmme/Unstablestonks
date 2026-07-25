@@ -19,7 +19,7 @@ import {
   type Candle,
 } from "./geckoterminal";
 import { getErc20Meta, getRpcHealth } from "./rpc";
-import { fetchStableScanStats } from "../explorer-stats";
+import { fetchExplorerStats } from "../explorer-stats";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
@@ -34,9 +34,9 @@ export function useChainStats() {
       const [explorer, health, scan] = await Promise.all([
         fetchChainStats(chain),
         getRpcHealth(chainKey),
-        // Stable's totals aren't in any free API — scrape StableScan's overview
-        // (server-side). Other chains skip this.
-        chainKey === "stable" ? fetchStableScanStats().catch(() => null) : Promise.resolve(null),
+        // Network totals, server-side: Blockscout /stats where available, else a
+        // scrape of the Etherscan-style explorer (Stable). Applies to all chains.
+        fetchExplorerStats({ data: { chain: chainKey } }).catch(() => null),
       ]);
       return {
         vol24h: explorer.vol24h ?? 0,
@@ -97,38 +97,113 @@ export function useTokens() {
   });
 }
 
+export interface RowEnrichment {
+  holders?: number;
+  dexName?: string;
+  launchpadName?: string;
+  graduated?: boolean;
+  ageMinutes?: number;
+  vol5m?: number;
+  vol1h?: number;
+  vol6h?: number;
+  buys24h?: number;
+  sells24h?: number;
+  priceChange24h?: number;
+  sparkline?: number[];
+}
+
 /**
- * Holder counts for the launches table. GeckoTerminal's pool feed doesn't carry
- * holders, so we enrich the top tokens by volume from the token-info endpoint
- * (bounded to stay under the rate limit). Returns address → holder count.
+ * Backfills rows the chain-wide pools page didn't cover — explorer-registry
+ * tokens arrive with no venue, age, short-window volumes or trend (the "—"
+ * cells). For the top rows by 24h volume we pull their own pools + token-info
+ * and fill those gaps. Bounded and staggered to respect the free rate limit.
  */
-export function useHolderCounts(tokens: TokenRow[] | undefined) {
+export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const targets = (tokens ?? [])
-    .filter((t) => t.indexed && !t.holders)
+    .filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0)
     .sort((a, b) => b.vol24h - a.vol24h)
-    .slice(0, 15)
+    .slice(0, 12)
     .map((t) => t.address);
   const key = targets.join(",");
-  return useQuery<Record<string, number>>({
-    queryKey: ["holder-counts", chainKey, key],
+  return useQuery<Record<string, RowEnrichment>>({
+    queryKey: ["row-enrichment", chainKey, key],
     enabled: targets.length > 0,
     staleTime: 120_000,
     refetchInterval: 120_000,
     queryFn: async () => {
-      const out: Record<string, number> = {};
-      // Small concurrency to respect the free-tier rate limit.
-      for (let i = 0; i < targets.length; i += 4) {
-        const batch = targets.slice(i, i + 4);
-        const infos = await Promise.all(
-          batch.map((a) => fetchTokenInfo(chain, a).catch(() => null)),
+      const out: Record<string, RowEnrichment> = {};
+      const now = Date.now();
+      for (let i = 0; i < targets.length; i += 3) {
+        const batch = targets.slice(i, i + 3);
+        await Promise.all(
+          batch.map(async (addr) => {
+            const [pools, info] = await Promise.all([
+              fetchTokenPools(chain, addr).catch(() => []),
+              fetchTokenInfo(chain, addr).catch(() => null),
+            ]);
+            const e: RowEnrichment = {};
+            if (info?.holders) e.holders = info.holders;
+            if (pools.length) {
+              const top = pools[0];
+              const curve = pools.find((p) => p.isLaunchpad);
+              const dex = pools.find((p) => !p.isLaunchpad);
+              e.dexName = top.dexName;
+              if (curve) {
+                e.launchpadName = curve.dexName;
+                e.graduated = Boolean(dex);
+              }
+              // Oldest pool = the token's real launch age.
+              const oldest = pools.reduce(
+                (m, p) => (p.createdAtMs > 0 && (m === 0 || p.createdAtMs < m) ? p.createdAtMs : m),
+                0,
+              );
+              if (oldest > 0) e.ageMinutes = Math.max(0, (now - oldest) / 60_000);
+              e.vol5m = pools.reduce((s, p) => s + p.vol5m, 0);
+              e.vol1h = pools.reduce((s, p) => s + p.vol1h, 0);
+              e.vol6h = pools.reduce((s, p) => s + p.vol6h, 0);
+              e.buys24h = pools.reduce((s, p) => s + p.buys24h, 0);
+              e.sells24h = pools.reduce((s, p) => s + p.sells24h, 0);
+              e.priceChange24h = top.priceChange24h;
+              e.sparkline = top.sparkline;
+            }
+            if (Object.keys(e).length) out[addr] = e;
+          }),
         );
-        batch.forEach((a, j) => {
-          const h = infos[j]?.holders;
-          if (h && h > 0) out[a] = h;
-        });
       }
       return out;
+    },
+  });
+}
+
+/**
+ * Chain-wide recent swaps: the real trades feed for the busiest pools, merged
+ * and newest-first. Powers whale watch + bundle detection on the terminal list.
+ */
+export function useChainTrades(tokens: TokenRow[] | undefined) {
+  const { chain, chainKey } = useChain();
+  const top = (tokens ?? [])
+    .filter((t) => t.indexed && t.vol24h > 0)
+    .slice(0, 3)
+    .map((t) => ({ address: t.address, symbol: t.symbol }));
+  const key = top.map((t) => t.address).join(",");
+  return useQuery<TradeEvent[]>({
+    queryKey: ["chain-trades", chainKey, key],
+    enabled: top.length > 0,
+    refetchInterval: REFRESH,
+    queryFn: async () => {
+      const perToken = await Promise.all(
+        top.map(async (t) => {
+          const pools = await fetchTokenPools(chain, t.address).catch(() => []);
+          const pool = pools[0]?.pool;
+          if (!pool) return [] as TradeEvent[];
+          const trades = await fetchPoolTrades(chain, pool, t.symbol).catch(
+            () => [] as TradeEvent[],
+          );
+          return trades.map((x) => ({ ...x, tokenAddress: t.address }));
+        }),
+      );
+      return perToken.flat().sort((a, b) => b.ms - a.ms);
     },
   });
 }
@@ -223,10 +298,13 @@ async function loadTokenDetail(
     token.dexName = pools[0].dexName;
     const launchpadPool = pools.find((p) => p.isLaunchpad);
     const dexPool = pools.find((p) => !p.isLaunchpad);
+    // Only claim curve/graduation when the token actually trades on a
+    // bonding-curve launchpad; a plain AMM listing gets no such label.
     if (launchpadPool) {
       token.launchpadName = launchpadPool.dexName;
       token.graduated = Boolean(dexPool);
-      token.graduationPct = token.graduated ? 100 : token.graduationPct;
+      token.graduationPct = token.graduated ? 100 : 0;
+      token.status = [...token.status, token.graduated ? "graduated" : "graduating"];
     }
   }
 
