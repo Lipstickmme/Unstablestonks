@@ -1,4 +1,5 @@
 import { Waves, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { formatUSD, shortAddr } from "@/lib/format";
 import type { TradeEvent } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
@@ -51,6 +52,18 @@ export function WhaleWatch({
                   )}
                   {buy ? "Buy" : "Sell"}
                 </span>
+                {/* Which token the whale actually traded. */}
+                {t.tokenAddress ? (
+                  <Link
+                    to="/token/$address"
+                    params={{ address: t.tokenAddress }}
+                    className="font-medium hover:text-primary"
+                  >
+                    {t.symbol}
+                  </Link>
+                ) : (
+                  <span className="font-medium">{t.symbol}</span>
+                )}
                 <span className="num font-medium">{formatUSD(t.amountUsd)}</span>
                 {t.wallet && (
                   <a
