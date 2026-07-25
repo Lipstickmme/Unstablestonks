@@ -3,6 +3,7 @@ import {
   CHAINS,
   FEE_RECIPIENT,
   PLATFORM_FEE_BPS,
+  getIntermediary,
   type ChainConfig,
   type ChainKey,
 } from "@/config/chains";
@@ -14,10 +15,15 @@ import { getErc20Allowance, getPublicClient } from "./data/rpc";
 // Every swap collects PLATFORM_FEE_BPS of the INPUT into FEE_RECIPIENT and routes
 // the remainder through the chain's DEX router (Uniswap V2 or V3 interface).
 // The fee leg is a plain transfer, so treasury collection works on ANY chain.
-// Verified router/wrapped-native addresses (Robinhood, Arc — from Uniswap's
-// official SDK) ship as defaults; any chain can be overridden via
-// VITE_ROUTER_<CHAIN> / VITE_WNATIVE_<CHAIN>. We never hardcode an UNVERIFIED
-// router (e.g. Stable, pending its published address) — a wrong router loses funds.
+// Verified router addresses (Robinhood, Arc — from Uniswap's SDK; Stable — from
+// docs.stable.xyz, cross-checked via router.factory()) ship as defaults; any chain
+// can be overridden via VITE_ROUTER_<CHAIN> / VITE_QUOTER_<CHAIN>.
+//
+// Swaps route through a chain's INTERMEDIARY token (see getIntermediary). Usually
+// that's the wrapped-native, funded by sending native value. On chains whose gas
+// token is itself an ERC-20 — Stable's USDT0, whose wrapped-native predeploy is a
+// non-functional revert-stub — the intermediary is that ERC-20 (mode "erc20"):
+// the buy is funded by an approve + transferFrom, not native value.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const V2_ROUTER_ABI = [
@@ -149,7 +155,7 @@ export interface SwapQuote {
 }
 
 export function swapEnabled(cfg: ChainConfig): boolean {
-  return Boolean(cfg.router && cfg.wrappedNative);
+  return Boolean(cfg.router && getIntermediary(cfg));
 }
 
 export function feePreview(amountIn: number): number {
@@ -177,15 +183,16 @@ export async function quoteSwap(
       routerReady: false,
     };
   }
-  const wnative = cfg.wrappedNative as `0x${string}`;
+  const inter = getIntermediary(cfg)!;
+  const interAddr = inter.address;
   const routerCfg = cfg.router!;
   const router = routerCfg.address;
-  const nativeDecimals = cfg.nativeCurrency.decimals;
   const swapAmount = amountIn - feeAmount;
 
-  const inDecimals = side === "buy" ? nativeDecimals : tokenDecimals;
-  const path = side === "buy" ? [wnative, token] : [token, wnative];
-  const outDecimals = side === "buy" ? tokenDecimals : nativeDecimals;
+  // The intermediary is the quote asset — its own decimals, not the native ones.
+  const inDecimals = side === "buy" ? inter.decimals : tokenDecimals;
+  const path = side === "buy" ? [interAddr, token] : [token, interAddr];
+  const outDecimals = side === "buy" ? tokenDecimals : inter.decimals;
 
   const amountInWei = parseUnits(swapAmount.toString(), inDecimals);
 
@@ -294,69 +301,123 @@ export async function executeSwap(params: {
   const cfg = CHAINS[chainKey];
   if (!swapEnabled(cfg)) throw new Error(`Swaps are not enabled on ${cfg.name} yet.`);
 
-  const wnative = cfg.wrappedNative as `0x${string}`;
+  const inter = getIntermediary(cfg)!;
+  const interAddr = inter.address;
   const routerCfg = cfg.router!;
   const router = routerCfg.address;
   const isV3 = routerCfg.kind === "uniswapV3";
   const feeTier = params.feeTier ?? routerCfg.feeTier ?? 3000;
-  const nativeDecimals = cfg.nativeCurrency.decimals;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const result: SwapExecution = {};
+
+  // The V2 SupportingFeeOnTransfer helpers assume a native (ETH-style) leg. An
+  // ERC-20 intermediary (e.g. USDT0 on Stable) is only wired for V3 here.
+  if (inter.mode === "erc20" && !isV3) {
+    throw new Error(`ERC-20-routed swaps on ${cfg.name} require a Uniswap V3 router.`);
+  }
 
   const feeAmount = feePreview(amountIn);
   const swapAmount = amountIn - feeAmount;
   const chain = walletClient.chain;
 
   if (side === "buy") {
-    const feeWei = parseUnits(feeAmount.toString(), nativeDecimals);
-    const swapWei = parseUnits(swapAmount.toString(), nativeDecimals);
+    const feeWei = parseUnits(feeAmount.toString(), inter.decimals);
+    const swapWei = parseUnits(swapAmount.toString(), inter.decimals);
     const minOutWei = parseUnits(minOut.toFixed(tokenDecimals), tokenDecimals);
 
-    // 1. Protocol fee → treasury (native transfer).
-    result.feeTxHash = await walletClient.sendTransaction({
-      account,
-      chain,
-      to: FEE_RECIPIENT,
-      value: feeWei,
-    });
+    if (inter.mode === "erc20") {
+      // Buy funded by the ERC-20 gas token (USDT0). Fee is an ERC-20 transfer,
+      // and the router pulls the remainder via transferFrom — no native value.
+      // 1. Protocol fee → treasury.
+      result.feeTxHash = await walletClient.writeContract({
+        account,
+        chain,
+        address: interAddr,
+        abi: ERC20_TX_ABI,
+        functionName: "transfer",
+        args: [FEE_RECIPIENT, feeWei],
+      });
 
-    // 2. Router swap of the remainder. V3 SwapRouter02 wraps native sent as value
-    //    when tokenIn is the wrapped-native token.
-    result.swapTxHash = isV3
-      ? await walletClient.writeContract({
+      // 2. Approve the router for the swap remainder if needed.
+      const allowance = await getErc20Allowance(chainKey, interAddr, account, router);
+      if (allowance < swapWei) {
+        result.approveTxHash = await walletClient.writeContract({
           account,
           chain,
-          address: router,
-          abi: V3_ROUTER_ABI,
-          functionName: "exactInputSingle",
-          args: [
-            {
-              tokenIn: wnative,
-              tokenOut: token,
-              fee: feeTier,
-              recipient: account,
-              amountIn: swapWei,
-              amountOutMinimum: minOutWei,
-              sqrtPriceLimitX96: 0n,
-            },
-          ],
-          value: swapWei,
-        })
-      : await walletClient.writeContract({
-          account,
-          chain,
-          address: router,
-          abi: V2_ROUTER_ABI,
-          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-          args: [minOutWei, [wnative, token], account, deadline],
-          value: swapWei,
+          address: interAddr,
+          abi: ERC20_TX_ABI,
+          functionName: "approve",
+          args: [router, swapWei],
         });
+      }
+
+      // 3. Router swap intermediary → token (no native value).
+      result.swapTxHash = await walletClient.writeContract({
+        account,
+        chain,
+        address: router,
+        abi: V3_ROUTER_ABI,
+        functionName: "exactInputSingle",
+        args: [
+          {
+            tokenIn: interAddr,
+            tokenOut: token,
+            fee: feeTier,
+            recipient: account,
+            amountIn: swapWei,
+            amountOutMinimum: minOutWei,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+      });
+    } else {
+      // Native path: fee is a native transfer; the router wraps the value.
+      // 1. Protocol fee → treasury (native transfer).
+      result.feeTxHash = await walletClient.sendTransaction({
+        account,
+        chain,
+        to: FEE_RECIPIENT,
+        value: feeWei,
+      });
+
+      // 2. Router swap of the remainder. V3 SwapRouter02 wraps native sent as
+      //    value when tokenIn is the wrapped-native token.
+      result.swapTxHash = isV3
+        ? await walletClient.writeContract({
+            account,
+            chain,
+            address: router,
+            abi: V3_ROUTER_ABI,
+            functionName: "exactInputSingle",
+            args: [
+              {
+                tokenIn: interAddr,
+                tokenOut: token,
+                fee: feeTier,
+                recipient: account,
+                amountIn: swapWei,
+                amountOutMinimum: minOutWei,
+                sqrtPriceLimitX96: 0n,
+              },
+            ],
+            value: swapWei,
+          })
+        : await walletClient.writeContract({
+            account,
+            chain,
+            address: router,
+            abi: V2_ROUTER_ABI,
+            functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+            args: [minOutWei, [interAddr, token], account, deadline],
+            value: swapWei,
+          });
+    }
   } else {
     const feeWei = parseUnits(feeAmount.toString(), tokenDecimals);
     const swapWei = parseUnits(swapAmount.toString(), tokenDecimals);
-    const minOutWei = parseUnits(minOut.toFixed(nativeDecimals), nativeDecimals);
+    const minOutWei = parseUnits(minOut.toFixed(inter.decimals), inter.decimals);
 
-    // 1. Protocol fee → treasury (ERC-20 transfer).
+    // 1. Protocol fee → treasury (ERC-20 transfer of the token being sold).
     result.feeTxHash = await walletClient.writeContract({
       account,
       chain,
@@ -379,8 +440,8 @@ export async function executeSwap(params: {
       });
     }
 
-    // 3. Router swap token → native. On V3 the output settles as the wrapped
-    //    native ERC-20 (WETH-style) in the seller's wallet.
+    // 3. Router swap token → intermediary. On V3 the output settles as the
+    //    intermediary ERC-20 (USDT0, or wrapped-native) in the seller's wallet.
     result.swapTxHash = isV3
       ? await walletClient.writeContract({
           account,
@@ -391,7 +452,7 @@ export async function executeSwap(params: {
           args: [
             {
               tokenIn: token,
-              tokenOut: wnative,
+              tokenOut: interAddr,
               fee: feeTier,
               recipient: account,
               amountIn: swapWei,
@@ -406,7 +467,7 @@ export async function executeSwap(params: {
           address: router,
           abi: V2_ROUTER_ABI,
           functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-          args: [swapWei, minOutWei, [token, wnative], account, deadline],
+          args: [swapWei, minOutWei, [token, interAddr], account, deadline],
         });
   }
 

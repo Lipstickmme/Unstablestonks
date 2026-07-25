@@ -76,6 +76,68 @@ function windowProvider(): Eip1193Provider | undefined {
   return eth;
 }
 
+// Remember the last wallet the user connected (by EIP-6963 rdns) so we can
+// silently re-attach to it on the next visit → one-tap (often zero-tap) reconnect.
+const LAST_WALLET_KEY = "ustonks.wallet.rdns";
+// Set when the user explicitly disconnects, so we don't auto-reflect the still-
+// authorized account on the next render/visit.
+const DISCONNECTED_KEY = "ustonks.wallet.off";
+
+function readStore(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeStore(key: string, val: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (val === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, val);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Coarse mobile-device check (touch UA), used only to steer the connect UX. */
+export function isMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+}
+
+export interface WalletDeepLink {
+  name: string;
+  /** Universal link that reopens the current page inside the wallet's dApp browser. */
+  href: string;
+}
+
+/**
+ * Deep links that reopen the current URL inside a mobile wallet's in-app browser.
+ * On mobile there's no extension to inject a provider, so the reliable path is to
+ * hand the user off to their wallet app, which then injects EIP-1193 for us.
+ */
+export function mobileWalletLinks(): WalletDeepLink[] {
+  if (typeof window === "undefined") return [];
+  const url = window.location.href;
+  const host = window.location.host + window.location.pathname + window.location.search;
+  const enc = encodeURIComponent(url);
+  return [
+    { name: "MetaMask", href: `https://metamask.app.link/dapp/${host}` },
+    { name: "Coinbase Wallet", href: `https://go.cb-w.com/dapp?cb_url=${enc}` },
+    { name: "Trust Wallet", href: `https://link.trustwallet.com/open_url?coin_id=60&url=${enc}` },
+    { name: "Rainbow", href: `https://rnbwapp.com/dapp?url=${enc}` },
+  ];
+}
+
+/** Where to send desktop users who have no injected wallet. */
+export const DESKTOP_WALLET_LINKS: WalletDeepLink[] = [
+  { name: "MetaMask", href: "https://metamask.io/download/" },
+  { name: "Rabby", href: "https://rabby.io/" },
+  { name: "Coinbase Wallet", href: "https://www.coinbase.com/wallet/downloads" },
+];
+
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
@@ -87,12 +149,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // EIP-6963 discovery.
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const lastRdns = readStore(LAST_WALLET_KEY);
     const onAnnounce = (e: Event) => {
       const detail = (e as CustomEvent<Eip6963Detail>).detail;
       if (!detail?.info || !detail.provider) return;
       setWallets((prev) =>
         prev.some((w) => w.info.uuid === detail.info.uuid) ? prev : [...prev, detail],
       );
+      // Prefer the previously-used wallet as the active provider on reload.
+      if (lastRdns && detail.info.rdns === lastRdns) setActive(detail);
     };
     window.addEventListener("eip6963:announceProvider", onAnnounce as EventListener);
     window.dispatchEvent(new Event("eip6963:requestProvider"));
@@ -110,12 +175,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const p = resolveProvider();
     if (!p) return;
-    p.request({ method: "eth_accounts" })
-      .then((accts) => {
-        const a = (accts as string[])[0];
-        if (a) setAddress(a as `0x${string}`);
-      })
-      .catch(() => {});
+    // Honor an explicit disconnect: don't silently re-attach the authorized account.
+    const suppressed = readStore(DISCONNECTED_KEY) === "1";
+    if (!suppressed)
+      p.request({ method: "eth_accounts" })
+        .then((accts) => {
+          const a = (accts as string[])[0];
+          if (a) setAddress(a as `0x${string}`);
+        })
+        .catch(() => {});
     p.request({ method: "eth_chainId" })
       .then((id) => setChainId(parseInt(id as string, 16)))
       .catch(() => {});
@@ -146,6 +214,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // one is pending is what makes wallets throw a spurious rejection.
       if (connectingRef.current) return null;
 
+      // A manual connect clears any prior "disconnected" suppression.
+      writeStore(DISCONNECTED_KEY, null);
+      const remember = (w?: DiscoveredWallet) => {
+        const match = w ?? wallets.find((x) => x.provider === provider);
+        if (match?.info.rdns) writeStore(LAST_WALLET_KEY, match.info.rdns);
+        if (match) setActive(match);
+      };
+
       // If already authorized, don't re-prompt (silently reuse the account).
       try {
         const existing = (await provider.request({ method: "eth_accounts" })) as string[];
@@ -153,6 +229,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           setAddress(existing[0] as `0x${string}`);
           const id = (await provider.request({ method: "eth_chainId" })) as string;
           setChainId(parseInt(id, 16));
+          remember(wallet);
           return existing[0] as `0x${string}`;
         }
       } catch {
@@ -168,11 +245,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setAddress(addr);
         const id = (await provider.request({ method: "eth_chainId" })) as string;
         setChainId(parseInt(id, 16));
-        if (wallet) setActive(wallet);
-        else {
-          const match = wallets.find((w) => w.provider === provider);
-          if (match) setActive(match);
-        }
+        remember(wallet);
         return addr;
       } catch (e) {
         const code = (e as { code?: number })?.code;
@@ -197,6 +270,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     setAddress(null);
     setActive(null);
+    // Remember the intent so we don't auto-reconnect on the next render/visit.
+    writeStore(DISCONNECTED_KEY, "1");
+    writeStore(LAST_WALLET_KEY, null);
   }, []);
 
   const ensureChain = useCallback(
