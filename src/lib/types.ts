@@ -59,6 +59,10 @@ export interface TokenRow {
   /** Real 5-point trend [-24h,-6h,-1h,-5m,now] reconstructed from price changes. */
   sparkline?: number[];
   priceChange5m?: number;
+  /** USD target of the bonding curve this token launched on (e.g. $9k on DYOR V3). */
+  curveTarget?: number;
+  /** True when graduationPct is derived from liquidity rather than reported. */
+  curveEstimated?: boolean;
 }
 
 export interface TradeEvent {

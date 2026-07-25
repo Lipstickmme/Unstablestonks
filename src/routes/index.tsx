@@ -6,7 +6,15 @@ import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
 import { BundleWatch } from "@/components/terminal/BundleWatch";
-import { useChainStats, useTokens, useRowEnrichment, useChainTrades } from "@/lib/data/hooks";
+import {
+  useChainStats,
+  useTokens,
+  useRowEnrichment,
+  useChainTrades,
+  useDyorTokens,
+  applyDyor,
+} from "@/lib/data/hooks";
+import { analyzeBundlesByToken } from "@/lib/bundles";
 import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
@@ -56,16 +64,21 @@ function Terminal() {
   );
   const heatQ = useXSocialHeatMap(topAddresses);
   const enrichQ = useRowEnrichment(tokensQ.data);
+  const dyorQ = useDyorTokens();
 
   const tokens = useMemo(() => {
     const rows = tokensQ.data ?? [];
     const heat = heatQ.data;
     const enrich = enrichQ.data;
-    if (!heat && !enrich) return rows;
+    const dyor = dyorQ.data;
+    if (!heat && !enrich && !dyor) return rows;
     return rows.map((t) => {
       const h = heat?.[t.address];
       const e = enrich?.[t.address];
       const next = { ...t };
+      // Real launchpad curve progress + graduation, where DYOR knows the token.
+      const d = dyor?.[t.address];
+      if (d) applyDyor(next, d);
       if (h?.ok) next.socialHeat = h.heat;
       if (e) {
         // Backfill only what the row is actually missing — never overwrite live
@@ -92,7 +105,7 @@ function Terminal() {
       }
       return next;
     });
-  }, [tokensQ.data, heatQ.data, enrichQ.data]);
+  }, [tokensQ.data, heatQ.data, enrichQ.data, dyorQ.data]);
 
   // Chain-wide 24h volume + whether the current run-rate is rising or falling.
   const volume = useMemo(() => {
@@ -104,7 +117,9 @@ function Terminal() {
   }, [tokens]);
 
   const tradesQ = useChainTrades(tokens);
-  const chainTrades = tradesQ.data ?? [];
+  const chainTrades = useMemo(() => tradesQ.data ?? [], [tradesQ.data]);
+  // Per-token bundle stats so every row in the list carries its own read.
+  const bundlesByToken = useMemo(() => analyzeBundlesByToken(chainTrades), [chainTrades]);
 
   return (
     <div className="min-h-screen">
@@ -141,6 +156,7 @@ function Terminal() {
             error={tokensQ.isError}
             initialQuery={q}
             watchOnly={view === "watch"}
+            bundles={bundlesByToken}
           />
         </div>
 

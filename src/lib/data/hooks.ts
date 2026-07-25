@@ -19,6 +19,13 @@ import {
   type Candle,
 } from "./geckoterminal";
 import { getErc20Meta, getRpcHealth } from "./rpc";
+import {
+  fetchDyorToken,
+  fetchDyorTokens,
+  estimateCurveProgress,
+  DYOR_CURVE_TARGET_V3,
+  type DyorTokenInfo,
+} from "./dyor";
 import { fetchExplorerStats } from "../explorer-stats";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
@@ -95,6 +102,36 @@ export function useTokens() {
       return [...gtRows, ...rest];
     },
   });
+}
+
+/**
+ * Merge DYOR launchpad facts onto a row: real bonding-curve progress and
+ * graduation state, plus holders/logo where the row lacks them. When DYOR
+ * reports no explicit progress we estimate it from liquidity against the
+ * documented target and flag it as an estimate so the UI can say so.
+ */
+export function applyDyor(token: TokenRow, d: DyorTokenInfo): TokenRow {
+  token.launchpadName = token.launchpadName ?? "DYOR Fun";
+  token.curveTarget = d.curveTarget;
+  token.graduated = d.graduated;
+
+  if (d.curveProgress > 0 || d.graduated) {
+    token.graduationPct = d.graduated ? 100 : d.curveProgress;
+    token.curveEstimated = false;
+  } else if (token.liquidityUsd) {
+    token.graduationPct = estimateCurveProgress(token.liquidityUsd, d.curveTarget);
+    token.curveEstimated = true;
+  }
+
+  if (d.holders && !token.holders) token.holders = d.holders;
+  if (d.logoUrl && !token.logoUrl) token.logoUrl = d.logoUrl;
+  if (d.createdAtMs && token.ageMinutes < 0) {
+    token.ageMinutes = Math.max(0, (Date.now() - d.createdAtMs) / 60_000);
+  }
+
+  const flag = d.graduated ? "graduated" : "graduating";
+  if (!token.status.includes(flag)) token.status = [...token.status, flag];
+  return token;
 }
 
 export interface RowEnrichment {
@@ -177,14 +214,30 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
 }
 
 /**
+ * DYOR Fun V3 launchpad data for the active chain — the only source that knows
+ * which tokens launched on a bonding curve, how far along it they are, and
+ * whether they graduated. Works identically on Robinhood, Stable and Arc.
+ */
+export function useDyorTokens() {
+  const { chain, chainKey } = useChain();
+  return useQuery<Record<string, DyorTokenInfo>>({
+    queryKey: ["dyor-tokens", chainKey],
+    staleTime: 60_000,
+    refetchInterval: 90_000,
+    retry: 0,
+    queryFn: () => fetchDyorTokens(chain),
+  });
+}
+
+/**
  * Chain-wide recent swaps: the real trades feed for the busiest pools, merged
- * and newest-first. Powers whale watch + bundle detection on the terminal list.
+ * and newest-first. Powers whale watch + per-token bundle detection.
  */
 export function useChainTrades(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const top = (tokens ?? [])
     .filter((t) => t.indexed && t.vol24h > 0)
-    .slice(0, 3)
+    .slice(0, 8)
     .map((t) => ({ address: t.address, symbol: t.symbol }));
   const key = top.map((t) => t.address).join(",");
   return useQuery<TradeEvent[]>({
@@ -226,11 +279,12 @@ async function loadTokenDetail(
   // 1. Fire the explorer record AND the GeckoTerminal calls concurrently — they
   //    only need the address, so there's no reason to wait for the explorer first.
   //    (Halves the time-to-first-paint on the token page.)
-  const [detailRaw, market, pools, info] = await Promise.all([
+  const [detailRaw, market, pools, info, dyor] = await Promise.all([
     fetchTokenDetail(chain, addr),
     fetchTokenMarket(chain, addr).catch(() => null),
     fetchTokenPools(chain, addr).catch(() => []),
     fetchTokenInfo(chain, addr).catch(() => null),
+    fetchDyorToken(chain, addr).catch(() => null),
   ]);
   let token = detailRaw;
 
@@ -307,6 +361,8 @@ async function loadTokenDetail(
       token.status = [...token.status, token.graduated ? "graduated" : "graduating"];
     }
   }
+  // DYOR is authoritative for curve progress + graduation on all three chains.
+  if (dyor) applyDyor(token, dyor);
 
   // 4. Holders + trades in parallel.
   const decimals = token.decimals ?? 18;

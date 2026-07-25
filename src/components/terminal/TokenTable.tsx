@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
+import type { BundleStats } from "@/lib/bundles";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
@@ -15,6 +16,7 @@ import {
   Flame,
   Zap,
   Rocket,
+  Boxes,
   Sparkles,
   Star,
 } from "lucide-react";
@@ -109,18 +111,32 @@ function Sparkline({ points, positive }: { points?: number[]; positive: boolean 
   );
 }
 
-/** Venue cell: launchpad + graduation state, or the DEX the token trades on. */
+/** Venue cell: launchpad + real curve progress / graduation, or the DEX venue. */
 function VenueCell({ t }: { t: TokenRow }) {
   if (t.launchpadName) {
+    const pct = Math.max(0, Math.min(100, t.graduationPct));
     return (
-      <div className="flex flex-col gap-0.5">
+      <div className="flex min-w-[7.5rem] flex-col gap-0.5">
         <span className="inline-flex items-center gap-1 text-[11px] font-medium">
           <Rocket className="h-3 w-3 text-grad" />
           {t.launchpadName}
         </span>
-        <span className={`text-[10px] ${t.graduated ? "text-bull" : "text-muted-foreground"}`}>
-          {t.graduated ? `✓ graduated → ${t.dexName ?? "DEX"}` : "on bonding curve"}
-        </span>
+        {t.graduated ? (
+          <span className="text-[10px] text-bull">✓ graduated → {t.dexName ?? "DEX"}</span>
+        ) : (
+          <>
+            <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full bg-grad transition-all duration-700"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <span className="num text-[10px] text-muted-foreground">
+              {pct.toFixed(0)}% of {t.curveTarget ? formatUSD(t.curveTarget) : "curve"}
+              {t.curveEstimated ? " (est.)" : ""}
+            </span>
+          </>
+        )}
       </div>
     );
   }
@@ -128,6 +144,27 @@ function VenueCell({ t }: { t: TokenRow }) {
     return <span className="text-[11px] text-muted-foreground">{t.dexName}</span>;
   }
   return <span className="text-[11px] text-muted-foreground">—</span>;
+}
+
+/** Per-row bundle read — same analysis as the panel, condensed to one cell. */
+function BundleCell({ stats }: { stats?: BundleStats }) {
+  if (!stats || stats.sample === 0) {
+    return <span className="num text-xs text-muted-foreground">—</span>;
+  }
+  if (stats.count === 0) {
+    return <span className="text-[11px] text-bull">clean</span>;
+  }
+  const cls =
+    stats.risk === "high" ? "text-bear" : stats.risk === "elevated" ? "text-warn" : "text-bull";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[11px] font-medium ${cls}`}
+      title={`${stats.count} same-block cluster(s), largest ${stats.largest} swaps, ${formatUSD(stats.bundledUsd)} bundled`}
+    >
+      <Boxes className="h-3 w-3" />
+      <span className="num">{stats.pct.toFixed(0)}%</span>
+    </span>
+  );
 }
 
 const usdOrDash = (v: number) => (v > 0 ? formatUSD(v) : "—");
@@ -150,12 +187,15 @@ export function TokenTable({
   error,
   initialQuery,
   watchOnly,
+  bundles,
 }: {
   tokens: TokenRow[];
   loading?: boolean;
   error?: boolean;
   initialQuery?: string;
   watchOnly?: boolean;
+  /** Per-token bundle stats, keyed by address. */
+  bundles?: Record<string, BundleStats>;
 }) {
   const { chain } = useChain();
   const wallet = useWallet();
@@ -274,6 +314,9 @@ export function TokenTable({
               <th className="px-2 py-2.5 text-right">
                 <H k="holders" label="Holders" right />
               </th>
+              <th className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Bundles
+              </th>
               <th className="px-2 py-2.5">
                 <H k="graduationPct" label="Venue" />
               </th>
@@ -288,7 +331,7 @@ export function TokenTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={12} className="px-4 py-16 text-center text-sm text-muted-foreground">
                   {watchOnly
                     ? "Your watchlist is empty. Tap the ☆ on any token to add it."
                     : loading
@@ -381,6 +424,9 @@ export function TokenTable({
                 </td>
                 <td className="num px-2 py-3 text-right text-xs">
                   {t.holders > 0 ? formatNum(t.holders) : "—"}
+                </td>
+                <td className="px-2 py-3 text-right">
+                  <BundleCell stats={bundles?.[t.address]} />
                 </td>
                 <td className="px-2 py-3">
                   <VenueCell t={t} />

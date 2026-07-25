@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Boxes, AlertTriangle } from "lucide-react";
 import { formatUSD } from "@/lib/format";
 import type { TradeEvent } from "@/lib/types";
+import { analyzeBundles } from "@/lib/bundles";
 
 /**
  * Bundle detection from the real trades feed. Trades that land in the same block
@@ -9,23 +10,10 @@ import type { TradeEvent } from "@/lib/types";
  * bundle (sniper/MEV/launch bundle). We group by second and flag clusters ≥ 3.
  */
 export function BundleWatch({ trades }: { trades: TradeEvent[] }) {
-  const stats = useMemo(() => {
-    const groups = new Map<number, TradeEvent[]>();
-    for (const t of trades) {
-      const sec = Math.floor(t.ms / 1000);
-      const arr = groups.get(sec);
-      if (arr) arr.push(t);
-      else groups.set(sec, [t]);
-    }
-    const bundles = [...groups.values()].filter((g) => g.length >= 3);
-    const bundledTrades = bundles.reduce((s, g) => s + g.length, 0);
-    const largest = bundles.reduce((m, g) => Math.max(m, g.length), 0);
-    const bundledUsd = bundles.reduce((s, g) => s + g.reduce((x, t) => x + t.amountUsd, 0), 0);
-    const pct = trades.length ? (bundledTrades / trades.length) * 100 : 0;
-    return { count: bundles.length, largest, bundledUsd, pct, sample: trades.length };
-  }, [trades]);
+  // Same analyzer the terminal list uses, so panel and rows always agree.
+  const stats = useMemo(() => analyzeBundles(trades), [trades]);
 
-  const risk = stats.pct >= 40 ? "high" : stats.pct >= 15 ? "elevated" : "low";
+  const risk = stats.risk === "none" ? "low" : stats.risk;
   const riskCls = risk === "high" ? "text-bear" : risk === "elevated" ? "text-warn" : "text-bull";
 
   return (
