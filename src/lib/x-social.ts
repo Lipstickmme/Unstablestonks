@@ -225,10 +225,45 @@ async function crawlOne(query: string): Promise<XSocialResult> {
 const CACHE_TTL_MS = 120_000;
 const crawlCache = new Map<string, { ts: number; result: XSocialResult }>();
 
+/** Hard ceiling so a slow/unreachable X source can never hang the UI card. */
+function withDeadline(query: string, ms: number): Promise<XSocialResult> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r: XSocialResult) => {
+      if (done) return;
+      done = true;
+      resolve(r);
+    };
+    const timer = setTimeout(
+      () =>
+        finish({
+          query,
+          posts: [],
+          mentions: 0,
+          uniqueAccounts: 0,
+          impressions: 0,
+          engagement: 0,
+          heat: 0,
+          source: "unavailable",
+          ok: false,
+          note: "X crawl timed out. Set X_BEARER_TOKEN for reliable, authoritative data.",
+        }),
+      ms,
+    );
+    crawlOne(query).then(
+      (r) => {
+        clearTimeout(timer);
+        finish(r);
+      },
+      () => clearTimeout(timer),
+    );
+  });
+}
+
 async function crawlCached(query: string): Promise<XSocialResult> {
   const hit = crawlCache.get(query);
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
-  const result = await crawlOne(query);
+  const result = await withDeadline(query, 13_000);
   // Only cache successful crawls — let failures retry sooner.
   if (result.ok) crawlCache.set(query, { ts: Date.now(), result });
   return result;
@@ -246,8 +281,9 @@ export const searchXSocial = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<XSocialResult> => crawlCached(data.query));
 
 /**
- * Batch crawl for the dashboard: heat for up to 5 contract addresses in one
- * request, sequential upstream calls + server-side cache to respect rate limits.
+ * Batch crawl for the dashboard: heat for up to 4 contract addresses. Runs in
+ * parallel (each with its own deadline + cache) so the card resolves quickly
+ * instead of stacking timeouts sequentially.
  */
 export const searchXSocialBatch = createServerFn({ method: "GET" })
   .validator((raw: unknown): { queries: string[] } => {
@@ -255,14 +291,15 @@ export const searchXSocialBatch = createServerFn({ method: "GET" })
     const queries = (Array.isArray(q) ? q : [])
       .map((v) => String(v ?? "").trim())
       .filter((v) => v.length > 0)
-      .slice(0, 5);
+      .slice(0, 4);
     if (!queries.length) throw new Error("queries required");
     return { queries };
   })
   .handler(async ({ data }): Promise<Record<string, XSocialResult>> => {
+    const results = await Promise.all(data.queries.map((q) => crawlCached(q)));
     const out: Record<string, XSocialResult> = {};
-    for (const q of data.queries) {
-      out[q] = await crawlCached(q);
-    }
+    data.queries.forEach((q, i) => {
+      out[q] = results[i];
+    });
     return out;
   });

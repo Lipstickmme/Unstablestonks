@@ -7,6 +7,7 @@ import { CandleChart } from "@/components/terminal/CandleChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
+import { BundleWatch } from "@/components/terminal/BundleWatch";
 import { TokenIcon } from "@/components/terminal/TokenIcon";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import { useTokenDetail, useTokens, useTokenCandles, type ChartTimeframe } from "@/lib/data/hooks";
@@ -309,6 +310,7 @@ function TokenDetail() {
                   symbol={token.symbol}
                   shareOfVoice={shareOfVoice}
                 />
+                <BundleWatch trades={data.trades} />
                 <WhaleWatch trades={data.trades} />
                 <LiveTrades trades={data.trades} />
               </div>
