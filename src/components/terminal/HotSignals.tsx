@@ -2,6 +2,7 @@ import { Flame, Users, TrendingUp, Coins, MessageCircle } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatNum, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
+import { TokenIcon } from "./TokenIcon";
 
 export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
   const byMcap = [...tokens]
@@ -76,13 +77,7 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
                   className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-elevated"
                 >
                   <span className="num w-4 text-[10px] text-muted-foreground">{i + 1}</span>
-                  <span className="grid h-5 w-5 flex-shrink-0 place-items-center overflow-hidden rounded-full bg-secondary text-[9px] font-semibold text-muted-foreground">
-                    {t.logoUrl ? (
-                      <img src={t.logoUrl} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      t.logo
-                    )}
-                  </span>
+                  <TokenIcon url={t.logoUrl} symbol={t.symbol} size={20} />
                   <span className="truncate text-xs font-medium">{t.symbol}</span>
                   <span className="num ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     {c.kind === "mcap" && formatUSD(t.mcap)}

@@ -6,6 +6,7 @@ import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
+import { TokenIcon } from "./TokenIcon";
 import {
   ArrowDown,
   ArrowUp,
@@ -297,18 +298,7 @@ export function TokenTable({
                     params={{ address: t.address }}
                     className="flex items-center gap-3"
                   >
-                    <div className="grid h-9 w-9 flex-shrink-0 place-items-center overflow-hidden rounded-full bg-secondary text-[11px] font-semibold text-muted-foreground">
-                      {t.logoUrl ? (
-                        <img
-                          src={t.logoUrl}
-                          alt=""
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        t.logo
-                      )}
-                    </div>
+                    <TokenIcon url={t.logoUrl} symbol={t.symbol} size={30} />
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{t.symbol}</span>

@@ -79,6 +79,9 @@ export interface ChainStats {
   trades24h: number;
   totalTransactions?: number;
   totalAddresses?: number;
+  newAddresses24h?: number;
+  tokensTotal?: number;
+  contractsTotal?: number;
   gasPriceGwei?: number;
   blockNumber?: number;
   updatedAt: Date;

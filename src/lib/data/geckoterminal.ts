@@ -142,7 +142,7 @@ export async function fetchTokenInfo(cfg: ChainConfig, address: string): Promise
 }
 
 /** Heuristic: DEX ids/names that identify bonding-curve launchpads vs regular DEXs. */
-const LAUNCHPAD_RE = /fun|pump|bags|launch|curve|pons|moon/i;
+const LAUNCHPAD_RE = /fun|pump|bags|launch|curve|pons|moon|dyor/i;
 
 function prettyDex(id: string): string {
   return id
@@ -356,18 +356,37 @@ export async function fetchOhlcv(
   pool: string,
   timeframe: "minute" | "hour" | "day" = "hour",
 ): Promise<number[]> {
+  const candles = await fetchOhlcvCandles(cfg, pool, timeframe);
+  return candles.map((c) => c.c);
+}
+
+export interface Candle {
+  t: number; // unix seconds
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+/** Full OHLCV candles for a pool (oldest→newest) — powers the candlestick chart. */
+export async function fetchOhlcvCandles(
+  cfg: ChainConfig,
+  pool: string,
+  timeframe: "minute" | "hour" | "day" = "hour",
+): Promise<Candle[]> {
   if (!cfg.geckoterminalNetwork) return [];
   const data = await gt<GtOhlcvResp>(
-    `/networks/${cfg.geckoterminalNetwork}/pools/${pool}/ohlcv/${timeframe}?limit=100`,
+    `/networks/${cfg.geckoterminalNetwork}/pools/${pool}/ohlcv/${timeframe}?limit=150`,
   );
   const list = data?.data?.attributes?.ohlcv_list;
   if (!list?.length) return [];
-  // ohlcv row = [timestamp, open, high, low, close, volume]; take close, oldest→newest.
+  // ohlcv row = [timestamp, open, high, low, close, volume]; oldest→newest.
   return list
     .slice()
     .reverse()
-    .map((row) => n(row[4]))
-    .filter((v) => v > 0);
+    .map((r) => ({ t: n(r[0]), o: n(r[1]), h: n(r[2]), l: n(r[3]), c: n(r[4]), v: n(r[5]) }))
+    .filter((k) => k.c > 0);
 }
 
 export async function fetchPoolTrades(

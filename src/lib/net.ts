@@ -54,7 +54,7 @@ export async function proxiedFetchJson<T>(
   url: string,
   opts: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T | null> {
-  const timeoutMs = opts.timeoutMs ?? 11_000;
+  const timeoutMs = opts.timeoutMs ?? 7_000;
   const targets = [url, ...PROXIES.map((p) => p(url))];
   for (const target of targets) {
     const res = await fetchWithTimeout(target, timeoutMs, opts.headers);

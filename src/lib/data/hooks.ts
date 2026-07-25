@@ -11,13 +11,15 @@ import {
 } from "./blockscout";
 import {
   fetchNetworkPools,
-  fetchOhlcv,
+  fetchOhlcvCandles,
   fetchPoolTrades,
   fetchTokenInfo,
   fetchTokenMarket,
   fetchTokenPools,
+  type Candle,
 } from "./geckoterminal";
 import { getErc20Meta, getRpcHealth } from "./rpc";
+import { fetchStableScanStats } from "../explorer-stats";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
@@ -29,20 +31,26 @@ export function useChainStats() {
     queryKey: ["chain-stats", chainKey],
     refetchInterval: REFRESH,
     queryFn: async () => {
-      const [explorer, health] = await Promise.all([
+      const [explorer, health, scan] = await Promise.all([
         fetchChainStats(chain),
         getRpcHealth(chainKey),
+        // Stable's totals aren't in any free API — scrape StableScan's overview
+        // (server-side). Other chains skip this.
+        chainKey === "stable" ? fetchStableScanStats().catch(() => null) : Promise.resolve(null),
       ]);
       return {
         vol24h: explorer.vol24h ?? 0,
         launches24h: explorer.launches24h ?? 0,
-        trades24h: explorer.trades24h ?? 0,
-        totalTransactions: explorer.totalTransactions,
-        totalAddresses: explorer.totalAddresses,
+        trades24h: scan?.transactions24h ?? explorer.trades24h ?? 0,
+        totalTransactions: scan?.totalTransactions ?? explorer.totalTransactions,
+        totalAddresses: scan?.totalAddresses ?? explorer.totalAddresses,
+        newAddresses24h: scan?.newAddresses24h,
+        tokensTotal: scan?.tokensTotal,
+        contractsTotal: scan?.contractsTotal,
         gasPriceGwei: health.ok ? health.gasPriceGwei : explorer.gasPriceGwei,
         blockNumber: health.ok ? health.blockNumber : undefined,
         updatedAt: new Date(),
-        live: Boolean(explorer.live) || health.ok,
+        live: Boolean(explorer.live) || health.ok || Boolean(scan?.ok),
       };
     },
   });
@@ -104,8 +112,16 @@ async function loadTokenDetail(
 ): Promise<TokenDetailData> {
   const addr = address.toLowerCase() as `0x${string}`;
 
-  // 1. Explorer token record (name/symbol/holders/price if the chain has an oracle).
-  let token = await fetchTokenDetail(chain, addr);
+  // 1. Fire the explorer record AND the GeckoTerminal calls concurrently — they
+  //    only need the address, so there's no reason to wait for the explorer first.
+  //    (Halves the time-to-first-paint on the token page.)
+  const [detailRaw, market, pools, info] = await Promise.all([
+    fetchTokenDetail(chain, addr),
+    fetchTokenMarket(chain, addr).catch(() => null),
+    fetchTokenPools(chain, addr).catch(() => []),
+    fetchTokenInfo(chain, addr).catch(() => null),
+  ]);
+  let token = detailRaw;
 
   // 2. RPC fallback for metadata when the explorer doesn't know the token yet.
   if (!token) {
@@ -148,12 +164,7 @@ async function loadTokenDetail(
     };
   }
 
-  // 3. DEX market enrichment + venue labels + token info when indexed.
-  const [market, pools, info] = await Promise.all([
-    fetchTokenMarket(chain, addr).catch(() => null),
-    fetchTokenPools(chain, addr).catch(() => []),
-    fetchTokenInfo(chain, addr).catch(() => null),
-  ]);
+  // 3. Apply the DEX market + venue + token-info enrichment gathered above.
   if (market) {
     token.price = market.price || token.price;
     token.priceChange24h = market.priceChange24h;
@@ -215,13 +226,13 @@ export function useTokenDetail(address: string) {
 
 export type ChartTimeframe = "minute" | "hour" | "day";
 
-/** Live close-price series for a pool at the chosen timeframe. */
-export function useTokenOhlcv(pool: string | null, timeframe: ChartTimeframe) {
+/** Live OHLC candles for a pool at the chosen timeframe (line + candlestick). */
+export function useTokenCandles(pool: string | null, timeframe: ChartTimeframe) {
   const { chain, chainKey } = useChain();
-  return useQuery<number[]>({
-    queryKey: ["ohlcv", chainKey, pool, timeframe],
+  return useQuery<Candle[]>({
+    queryKey: ["candles", chainKey, pool, timeframe],
     enabled: Boolean(pool),
     refetchInterval: timeframe === "minute" ? REFRESH : 60_000,
-    queryFn: () => (pool ? fetchOhlcv(chain, pool, timeframe) : Promise.resolve([])),
+    queryFn: () => (pool ? fetchOhlcvCandles(chain, pool, timeframe) : Promise.resolve([])),
   });
 }

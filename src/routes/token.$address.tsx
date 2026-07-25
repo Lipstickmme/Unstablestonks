@@ -3,13 +3,24 @@ import { useState } from "react";
 import { Header } from "@/components/terminal/Header";
 import { SwapPanel } from "@/components/terminal/SwapPanel";
 import { PriceChart } from "@/components/terminal/PriceChart";
+import { CandleChart } from "@/components/terminal/CandleChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
+import { WhaleWatch } from "@/components/terminal/WhaleWatch";
+import { TokenIcon } from "@/components/terminal/TokenIcon";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
-import { useTokenDetail, useTokens, useTokenOhlcv, type ChartTimeframe } from "@/lib/data/hooks";
+import { useTokenDetail, useTokens, useTokenCandles, type ChartTimeframe } from "@/lib/data/hooks";
 import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
-import { ArrowLeft, Copy, ExternalLink, Rocket, Users } from "lucide-react";
+import {
+  ArrowLeft,
+  CandlestickChart,
+  Copy,
+  ExternalLink,
+  LineChart,
+  Rocket,
+  Users,
+} from "lucide-react";
 
 const TIMEFRAMES: { key: ChartTimeframe; label: string }[] = [
   { key: "minute", label: "1m" },
@@ -36,7 +47,9 @@ function TokenDetail() {
   const { chain } = useChain();
   const { data, isLoading, isError, error } = useTokenDetail(address);
   const [tf, setTf] = useState<ChartTimeframe>("hour");
-  const chartQ = useTokenOhlcv(data?.pool ?? null, tf);
+  const [chartKind, setChartKind] = useState<"line" | "candles">("candles");
+  const candlesQ = useTokenCandles(data?.pool ?? null, tf);
+  const candles = candlesQ.data ?? [];
 
   // Peers for share-of-voice: this chain's top tokens by 24h volume.
   const tokensQ = useTokens();
@@ -48,7 +61,7 @@ function TokenDetail() {
 
   const token = data?.token;
   const positive = (token?.priceChange24h ?? 0) >= 0;
-  const chart = chartQ.data ?? [];
+  const closes = candles.map((c) => c.c);
 
   return (
     <div className="min-h-screen">
@@ -81,13 +94,7 @@ function TokenDetail() {
             <section className="card-surface p-4 sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="flex items-center gap-4">
-                  <div className="grid h-14 w-14 flex-shrink-0 place-items-center overflow-hidden rounded-full bg-secondary text-sm font-semibold text-muted-foreground">
-                    {token.logoUrl ? (
-                      <img src={token.logoUrl} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      token.logo
-                    )}
-                  </div>
+                  <TokenIcon url={token.logoUrl} symbol={token.symbol} size={48} />
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h1 className="text-2xl font-medium">{token.symbol}</h1>
@@ -175,13 +182,30 @@ function TokenDetail() {
                   <div className="flex items-center justify-between border-b border-border px-4 py-3">
                     <div className="flex items-center gap-2">
                       <h2 className="text-sm font-medium">Price</h2>
-                      {chart.length > 1 && (
+                      {candles.length > 1 && (
                         <span className="chip">
                           <span className="live-dot" /> live
                         </span>
                       )}
                     </div>
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                      {/* line ⇆ candlestick */}
+                      <div className="mr-1 flex items-center gap-0.5 rounded border border-border p-0.5">
+                        <button
+                          onClick={() => setChartKind("candles")}
+                          title="Candlestick"
+                          className={`rounded p-1 ${chartKind === "candles" ? "bg-secondary text-foreground" : "hover:text-foreground"}`}
+                        >
+                          <CandlestickChart className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setChartKind("line")}
+                          title="Line"
+                          className={`rounded p-1 ${chartKind === "line" ? "bg-secondary text-foreground" : "hover:text-foreground"}`}
+                        >
+                          <LineChart className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                       {TIMEFRAMES.map((t) => (
                         <button
                           key={t.key}
@@ -193,15 +217,18 @@ function TokenDetail() {
                           {t.label}
                         </button>
                       ))}
-                      <span className="ml-2 hidden sm:inline">candles · DEX oracle</span>
                     </div>
                   </div>
                   <div className="h-[260px] p-2 sm:h-[320px]">
-                    {chart.length > 1 ? (
-                      <PriceChart points={chart} positive={positive} />
+                    {candles.length > 1 ? (
+                      chartKind === "candles" ? (
+                        <CandleChart candles={candles} />
+                      ) : (
+                        <PriceChart points={closes} positive={positive} />
+                      )
                     ) : (
                       <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
-                        {chartQ.isLoading && data.pool
+                        {candlesQ.isLoading && data.pool
                           ? "Loading live candles…"
                           : `Price history appears once a DEX indexes this pool on ${chain.name}. Live on-chain activity below still populates from the explorer.`}
                       </div>
@@ -282,6 +309,7 @@ function TokenDetail() {
                   symbol={token.symbol}
                   shareOfVoice={shareOfVoice}
                 />
+                <WhaleWatch trades={data.trades} />
                 <LiveTrades trades={data.trades} />
               </div>
             </div>
