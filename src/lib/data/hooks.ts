@@ -97,6 +97,42 @@ export function useTokens() {
   });
 }
 
+/**
+ * Holder counts for the launches table. GeckoTerminal's pool feed doesn't carry
+ * holders, so we enrich the top tokens by volume from the token-info endpoint
+ * (bounded to stay under the rate limit). Returns address → holder count.
+ */
+export function useHolderCounts(tokens: TokenRow[] | undefined) {
+  const { chain, chainKey } = useChain();
+  const targets = (tokens ?? [])
+    .filter((t) => t.indexed && !t.holders)
+    .sort((a, b) => b.vol24h - a.vol24h)
+    .slice(0, 15)
+    .map((t) => t.address);
+  const key = targets.join(",");
+  return useQuery<Record<string, number>>({
+    queryKey: ["holder-counts", chainKey, key],
+    enabled: targets.length > 0,
+    staleTime: 120_000,
+    refetchInterval: 120_000,
+    queryFn: async () => {
+      const out: Record<string, number> = {};
+      // Small concurrency to respect the free-tier rate limit.
+      for (let i = 0; i < targets.length; i += 4) {
+        const batch = targets.slice(i, i + 4);
+        const infos = await Promise.all(
+          batch.map((a) => fetchTokenInfo(chain, a).catch(() => null)),
+        );
+        batch.forEach((a, j) => {
+          const h = infos[j]?.holders;
+          if (h && h > 0) out[a] = h;
+        });
+      }
+      return out;
+    },
+  });
+}
+
 export interface TokenDetailData {
   token: TokenRow;
   holders: { address: string; amount: number; pct: number }[];

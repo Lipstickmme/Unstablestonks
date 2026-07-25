@@ -21,16 +21,14 @@ export function StatsOverview({ stats, loading }: Props) {
   const gwei = (n: number) => `${n.toFixed(3)} gwei`;
   const pick = (n?: number) => (n && n > 0 ? n : undefined);
 
-  // Prefer the richer explorer totals (Stable scrape); fall back to on-chain.
+  // Block height + gas are always real (straight off JSON-RPC). Total txns /
+  // addresses come from the explorer scrape and show "—" if it can't be parsed —
+  // never a fabricated value.
   const tiles: Tile[] = [
-    { label: "24h transactions", value: pick(stats?.trades24h), format: formatNum },
+    { label: "Block height", value: pick(stats?.blockNumber), format: formatNum },
+    { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
     { label: "Total transactions", value: pick(stats?.totalTransactions), format: formatNum },
     { label: "Total addresses", value: pick(stats?.totalAddresses), format: formatNum },
-    stats?.newAddresses24h
-      ? { label: "New addresses 24h", value: pick(stats.newAddresses24h), format: formatNum }
-      : stats?.tokensTotal
-        ? { label: "Tokens", value: pick(stats.tokensTotal), format: formatNum }
-        : { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
   ];
 
   const updated = stats?.updatedAt ?? new Date();

@@ -44,26 +44,37 @@ export interface ExplorerStats {
 }
 
 /** "10.95 M" | "97,059" | "1.2B" → number. */
-function parseMetric(raw: string): number {
-  const m = raw
-    .trim()
-    .replace(/,/g, "")
-    .match(/([\d.]+)\s*([KMB])?/i);
-  if (!m) return 0;
+function toNumber(tok: string): number {
+  const m = tok.replace(/,/g, "").match(/^([\d.]+)\s*([KMB])?/i);
+  if (!m) return NaN;
   const n = parseFloat(m[1]);
   const mult = { K: 1e3, M: 1e6, B: 1e9 }[(m[2] ?? "").toUpperCase()] ?? 1;
-  return isFinite(n) ? n * mult : 0;
+  return isFinite(n) ? n * mult : NaN;
 }
 
-/** Pull the number that follows a label in the scraped page text. */
-function afterLabel(text: string, label: RegExp): number | undefined {
-  const re = new RegExp(label.source + String.raw`[^\d]*([\d.,]+\s*[KMB]?)`, "i");
-  const m = text.match(re);
-  return m ? parseMetric(m[1]) : undefined;
+/**
+ * Find the value for a labelled stat. We locate the label, take the ~80 chars
+ * that follow, extract every number token, and keep the LARGEST — the headline
+ * figure (e.g. "10.95 M"), never the small parenthetical suffix ("6.9 TPS",
+ * "87.17%", "(24H)"). A per-metric sanity floor rejects garbage so a bad parse
+ * shows "—" instead of a fake "1".
+ */
+function statValue(text: string, label: RegExp, floor: number): number | undefined {
+  const at = text.search(label);
+  if (at < 0) return undefined;
+  const window = text.slice(at, at + 90).replace(new RegExp(label.source, "i"), "");
+  // Strip parenthetical suffixes like "(24H)", "(6.9 TPS)", "(87.17%)".
+  const cleaned = window.replace(/\([^)]*\)/g, " ").replace(/[\d.]+\s*%/g, " ");
+  const tokens = cleaned.match(/[\d,]+(?:\.\d+)?\s*[KMB]?/gi) ?? [];
+  let best = NaN;
+  for (const tok of tokens) {
+    const v = toNumber(tok.trim());
+    if (isFinite(v) && (isNaN(best) || v > best)) best = v;
+  }
+  return isFinite(best) && best >= floor ? best : undefined;
 }
 
 async function scrapeStableScan(): Promise<ExplorerStats> {
-  // The Etherscan-style overview stats live on the charts/stats page.
   const key = apiKey();
   const pages = [
     `https://stablescan.xyz/charts?apikey=${key}`,
@@ -72,17 +83,18 @@ async function scrapeStableScan(): Promise<ExplorerStats> {
   ];
   for (const url of pages) {
     const text = await proxiedFetchText(url, { timeoutMs: 12_000 });
-    if (!text) continue;
+    if (!text || text.length < 200) continue;
+    // Qualifiers keep "…(Total)" and "…(24H)" apart; floors reject implausible hits.
     const stats: ExplorerStats = {
-      totalAddresses: afterLabel(text, /Addresses\s*\(?Total\)?/),
-      totalTransactions: afterLabel(text, /Transactions\s*\(?Total\)?/),
-      newAddresses24h: afterLabel(text, /New\s*Addresses\s*\(?24H?\)?/),
-      transactions24h: afterLabel(text, /Transactions\s*\(?24H?\)?/),
-      tokensTotal: afterLabel(text, /Tokens\s*\(?Total\)?/),
-      contractsTotal: afterLabel(text, /Contracts\s*Deployed\s*\(?Total\)?/),
+      totalTransactions: statValue(text, /Transactions\s*\(?\s*Total/i, 1000),
+      totalAddresses: statValue(text, /Addresses\s*\(?\s*Total/i, 100),
+      transactions24h: statValue(text, /Transactions\s*\(?\s*24/i, 10),
+      newAddresses24h: statValue(text, /New\s*Addresses\s*\(?\s*24/i, 1),
+      tokensTotal: statValue(text, /Tokens\s*\(?\s*Total/i, 1),
+      contractsTotal: statValue(text, /Contracts\s*Deployed\s*\(?\s*Total/i, 1),
       ok: false,
     };
-    stats.ok = Boolean(stats.totalTransactions || stats.totalAddresses);
+    stats.ok = Boolean(stats.totalTransactions && stats.totalAddresses);
     if (stats.ok) return stats;
   }
   return { ok: false };

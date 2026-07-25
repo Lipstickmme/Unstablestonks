@@ -4,7 +4,7 @@ import { Header } from "@/components/terminal/Header";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
-import { useChainStats, useTokens } from "@/lib/data/hooks";
+import { useChainStats, useTokens, useHolderCounts } from "@/lib/data/hooks";
 import { useXSocialHeatMap } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
@@ -53,16 +53,22 @@ function Terminal() {
     [tokensQ.data],
   );
   const heatQ = useXSocialHeatMap(topAddresses);
+  const holdersQ = useHolderCounts(tokensQ.data);
 
   const tokens = useMemo(() => {
     const rows = tokensQ.data ?? [];
     const heat = heatQ.data;
-    if (!heat) return rows;
+    const holders = holdersQ.data;
+    if (!heat && !holders) return rows;
     return rows.map((t) => {
-      const h = heat[t.address];
-      return h?.ok ? { ...t, socialHeat: h.heat } : t;
+      const h = heat?.[t.address];
+      const hc = holders?.[t.address];
+      const next = { ...t };
+      if (h?.ok) next.socialHeat = h.heat;
+      if (hc && !next.holders) next.holders = hc;
+      return next;
     });
-  }, [tokensQ.data, heatQ.data]);
+  }, [tokensQ.data, heatQ.data, holdersQ.data]);
 
   return (
     <div className="min-h-screen">

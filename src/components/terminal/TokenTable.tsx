@@ -14,7 +14,6 @@ import {
   ExternalLink,
   Flame,
   Zap,
-  Users,
   Rocket,
   Sparkles,
   Star,
@@ -28,7 +27,8 @@ type SortKey =
   | "mcap"
   | "graduationPct"
   | "socialHeat"
-  | "priceChange24h";
+  | "priceChange24h"
+  | "holders";
 type Filter = "all" | "new" | "trending" | "graduating" | "graduated";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
@@ -131,6 +131,18 @@ function VenueCell({ t }: { t: TokenRow }) {
 }
 
 const usdOrDash = (v: number) => (v > 0 ? formatUSD(v) : "—");
+
+/** 24h buy/sell counts — a real "recent activity" momentum read. */
+function Txns24h({ buys, sells }: { buys: number; sells: number }) {
+  if (buys + sells <= 0) return <span className="num text-xs text-muted-foreground">—</span>;
+  return (
+    <span className="num text-[11px]">
+      <span className="text-bull">{formatNum(buys)}</span>
+      <span className="text-muted-foreground">/</span>
+      <span className="text-bear">{formatNum(sells)}</span>
+    </span>
+  );
+}
 
 export function TokenTable({
   tokens,
@@ -254,13 +266,13 @@ export function TokenTable({
                 <H k="mcap" label="Mkt cap" right />
               </th>
               <th className="px-2 py-2.5 text-right">
-                <H k="vol5m" label="V·5m" right />
-              </th>
-              <th className="px-2 py-2.5 text-right">
-                <H k="vol1h" label="V·1h" right />
-              </th>
-              <th className="px-2 py-2.5 text-right">
                 <H k="vol24h" label="V·24h" right />
+              </th>
+              <th className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Txns 24h
+              </th>
+              <th className="px-2 py-2.5 text-right">
+                <H k="holders" label="Holders" right />
               </th>
               <th className="px-2 py-2.5">
                 <H k="graduationPct" label="Venue" />
@@ -363,9 +375,13 @@ export function TokenTable({
                   <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
                 </td>
                 <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.mcap)}</td>
-                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol5m)}</td>
-                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol1h)}</td>
                 <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol24h)}</td>
+                <td className="px-2 py-3 text-right">
+                  <Txns24h buys={t.buys24h} sells={t.sells24h} />
+                </td>
+                <td className="num px-2 py-3 text-right text-xs">
+                  {t.holders > 0 ? formatNum(t.holders) : "—"}
+                </td>
                 <td className="px-2 py-3">
                   <VenueCell t={t} />
                 </td>
@@ -378,8 +394,7 @@ export function TokenTable({
                       />
                     </div>
                     <span className="num flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <Users className="h-2.5 w-2.5" />
-                      {t.holders > 0 ? formatNum(t.holders) : "—"}
+                      {t.socialHeat > 0 ? t.socialHeat : "—"}
                     </span>
                   </div>
                 </td>
