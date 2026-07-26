@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
+import { BRAND_IMAGE_URL, BRAND_IMAGE_ORIGIN } from "../config/brand";
 import { WalletProvider } from "../lib/wallet";
 import { WatchlistProvider } from "../lib/watchlist";
 import { Toaster } from "../components/ui/sonner";
@@ -83,15 +84,28 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content:
           "Switch between Robinhood Chain, Stable, and Arc. Live on-chain intelligence, X social crawl, and non-custodial swaps.",
       },
-      { property: "og:image", content: "/logo.svg" },
+      { property: "og:image", content: BRAND_IMAGE_URL },
+      { property: "og:image:alt", content: "UnstableStonks" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: "UnstableStonks — multichain launchpad terminal" },
+      {
+        name: "twitter:description",
+        content:
+          "Switch between Robinhood Chain, Stable, and Arc. Live on-chain intelligence, X social crawl, and non-custodial swaps.",
+      },
+      { name: "twitter:image", content: BRAND_IMAGE_URL },
       { name: "theme-color", content: "#0b0b0d" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      { rel: "icon", href: "/logo.svg", type: "image/svg+xml" },
+      // No `type` on the hosted icon: the gateway serves a raw file and letting
+      // the browser sniff it avoids a mismatch silently disabling the favicon.
+      { rel: "icon", href: BRAND_IMAGE_URL },
+      { rel: "apple-touch-icon", href: BRAND_IMAGE_URL },
+      // Kept last as the fallback if the gateway can't be reached.
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "preconnect", href: BRAND_IMAGE_ORIGIN },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {

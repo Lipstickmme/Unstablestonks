@@ -1,5 +1,9 @@
-// UnstableStonks brand mark: pixel "deal-with-it" shades + wordmark.
-// Reconstructed as vector so it stays crisp at any size and inherits currentColor.
+// UnstableStonks brand mark: the hosted artwork, with the original vector
+// shades kept as a fallback so the header never renders an empty box if the
+// gateway is slow or blocked.
+
+import { useState } from "react";
+import { BRAND_IMAGE_URL } from "@/config/brand";
 
 export function ShadesMark({ className = "", size = 28 }: { className?: string; size?: number }) {
   // 16x6 pixel grid of the classic blocky sunglasses.
@@ -35,11 +39,26 @@ export function ShadesMark({ className = "", size = 28 }: { className?: string; 
 }
 
 export function Logo({ compact = false }: { compact?: boolean }) {
+  const [failed, setFailed] = useState(false);
+
   return (
     <span className="flex items-center gap-2 select-none">
-      <span className="grid place-items-center rounded-md bg-foreground px-1.5 py-1 text-background">
-        <ShadesMark size={22} />
-      </span>
+      {failed ? (
+        <span className="grid place-items-center rounded-md bg-foreground px-1.5 py-1 text-background">
+          <ShadesMark size={22} />
+        </span>
+      ) : (
+        <img
+          src={BRAND_IMAGE_URL}
+          alt="UnstableStonks"
+          width={28}
+          height={28}
+          loading="eager"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="h-7 w-7 rounded-md object-cover"
+        />
+      )}
       {!compact && (
         <span className="font-mono text-sm font-bold tracking-tight leading-none">
           UNSTABLE<span className="text-primary">STONKS</span>
