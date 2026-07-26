@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useChain } from "@/lib/chain-context";
 import type { ChainConfig, ChainKey } from "@/config/chains";
@@ -17,6 +18,7 @@ import {
   type DexPaidStatus,
 } from "./dexscreener";
 import { fetchNewLaunches } from "./discovery";
+import { fetchExplorerTokens } from "./explorer-tokens";
 import {
   fetchNetworkPools,
   fetchOhlcvCandles,
@@ -74,6 +76,41 @@ export function useChainStats() {
 }
 
 /**
+ * How many rows each source contributed on the last refresh, per chain. Surfaced
+ * in the terminal so an empty list can be diagnosed from the screen instead of
+ * guessed at — "geckoterminal 24 · explorer 0" says exactly which hop is dead.
+ */
+export interface SourceCounts {
+  geckoterminal: number;
+  dexscreener: number;
+  blockscout: number;
+  explorer: number;
+  onchain: number;
+  note?: string;
+}
+
+const sourceCounts = new Map<ChainKey, SourceCounts>();
+const sourceListeners = new Set<() => void>();
+
+function recordSources(key: ChainKey, counts: SourceCounts) {
+  sourceCounts.set(key, counts);
+  for (const l of sourceListeners) l();
+}
+
+/** Live per-source row counts for the active chain. */
+export function useSourceCounts(): SourceCounts | undefined {
+  const { chainKey } = useChain();
+  return useSyncExternalStore(
+    (cb) => {
+      sourceListeners.add(cb);
+      return () => sourceListeners.delete(cb);
+    },
+    () => sourceCounts.get(chainKey),
+    () => undefined,
+  );
+}
+
+/**
  * Fold `extra` into `into`, keeping whichever value is actually known. Market
  * figures are taken from the source that has them; a zero never overwrites a
  * real number, and identity fields (name/symbol/logo) prefer what's already set.
@@ -117,20 +154,26 @@ function foldRow(into: TokenRow, extra: TokenRow): void {
 }
 
 /**
- * Token universe for the active chain — the union of four independent sources,
+ * Token universe for the active chain — the union of five independent sources,
  * in priority order. Every one is optional: a source that fails or doesn't cover
  * the chain contributes nothing, and can never remove a row another source found.
+ * Each one's row count is recorded for the on-screen source readout.
  *
  *  1. GeckoTerminal pools + new_pools (2 pages each) — the richest market data
  *     where the chain is indexed: 5m/1h/24h volumes, buys/sells, venue, trend.
  *  2. DexScreener — a second full list, found by searching the chain's own quote
  *     assets. Fills chains and tokens GeckoTerminal is behind on.
- *  3. Blockscout token registry — holders, icons, and the tokens no DEX indexer
- *     has picked up.
- *  4. On-chain factory logs — pool-creation events read straight off the RPC.
- *     This is the only source that cannot lag, so it's what actually surfaces
- *     launches from the last few hours. Rows arrive unpriced and get their
- *     market data from 1/2 above once an indexer catches up.
+ *  3. Blockscout token registry — holders and icons, where a Blockscout instance
+ *     exists for the chain at all.
+ *  4. Explorer token scan — ERC-20 transfers through the DEX router, from the
+ *     Etherscan-family API with the configured key. One request returns every
+ *     token actually traded on the chain, newest first, with its metadata. This
+ *     is the source that covers chains with no Blockscout and no DEX indexer.
+ *  5. On-chain factory logs — pool-creation events read straight off the RPC.
+ *     The only source that cannot lag, so it catches launches from minutes ago.
+ *
+ * Sources 4 and 5 arrive unpriced and pick up market data from 1/2 as indexers
+ * catch up — an unpriced row is shown as "—", never as a fabricated zero.
  */
 export function useTokens() {
   const { chain, chainKey } = useChain();
@@ -142,10 +185,11 @@ export function useTokens() {
     initialData: () => readCache<TokenRow[]>(cacheKey),
     initialDataUpdatedAt: 0,
     queryFn: async () => {
-      const [gtRows, dsRows, bsRows] = await Promise.all([
+      const [gtRows, dsRows, bsRows, explorerScan] = await Promise.all([
         fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
+        fetchExplorerTokens(chain).catch(() => ({ rows: [] as TokenRow[], note: "threw" })),
       ]);
 
       // The live pools tell the scanner which DEX factories this chain actually
@@ -158,10 +202,19 @@ export function useTokens() {
         () => [] as TokenRow[],
       );
 
+      recordSources(chainKey, {
+        geckoterminal: gtRows.length,
+        dexscreener: dsRows.length,
+        blockscout: bsRows.length,
+        explorer: explorerScan.rows.length,
+        onchain: freshRows.length,
+        note: explorerScan.note,
+      });
+
       const merged = new Map<string, TokenRow>();
       // Order matters: the first source to introduce an address owns its market
       // figures, later ones only fill blanks.
-      for (const group of [gtRows, dsRows, bsRows, freshRows]) {
+      for (const group of [gtRows, dsRows, bsRows, explorerScan.rows, freshRows]) {
         for (const row of group) {
           const cur = merged.get(row.address);
           if (cur) foldRow(cur, row);

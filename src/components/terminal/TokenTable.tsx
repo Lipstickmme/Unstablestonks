@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
-import type { TokenInsight } from "@/lib/data/hooks";
+import { useSourceCounts, type TokenInsight } from "@/lib/data/hooks";
 import { BASE_BOT_URL } from "@/config/links";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
@@ -130,6 +130,33 @@ function VenueCell({ t }: { t: TokenRow }) {
 }
 
 /** Per-row bundle read — same analysis as the panel, condensed to one cell. */
+/**
+ * Which data source produced how many rows on the last refresh. Only shown when
+ * something is actually missing, so a healthy terminal stays uncluttered — but
+ * when the list looks thin it names the dead hop instead of leaving you to guess.
+ */
+function SourceReadout() {
+  const c = useSourceCounts();
+  if (!c) return null;
+  const entries: [string, number][] = [
+    ["gecko", c.geckoterminal],
+    ["dexscreener", c.dexscreener],
+    ["blockscout", c.blockscout],
+    ["explorer", c.explorer],
+    ["on-chain", c.onchain],
+  ];
+  const dead = entries.filter(([, n]) => n === 0);
+  if (!dead.length) return null;
+  return (
+    <span
+      className="chip !py-0 text-[9px] text-muted-foreground"
+      title={entries.map(([k, n]) => `${k}: ${n}`).join(" · ") + (c.note ? ` — ${c.note}` : "")}
+    >
+      {entries.length - dead.length}/{entries.length} sources
+    </span>
+  );
+}
+
 /**
  * A share-of-supply figure. Blank until the check has run — an unchecked token
  * must not read as 0%. Turns amber past `warnAbove`, the point where the
@@ -321,6 +348,7 @@ export function TokenTable({
           <span className="chip">
             <span className="live-dot" /> live
           </span>
+          <SourceReadout />
         </div>
       </div>
 
