@@ -4,7 +4,14 @@ import { ArrowRight, Loader2, ExternalLink, Zap } from "lucide-react";
 import { CHAINS, CHAIN_ORDER, type ChainKey } from "@/config/chains";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
-import { getBridgeQuote, executeBridge, type BridgeQuote } from "@/lib/bridge";
+import {
+  getBridgeQuote,
+  executeBridge,
+  availableRails,
+  type BridgeQuote,
+  type BridgeRail,
+} from "@/lib/bridge";
+import { bridgeViaCctp, usdcAddress } from "@/lib/cctp";
 
 /**
  * Cross-chain top-up. Deliberately minimal: pick a source chain and an amount,
@@ -27,6 +34,8 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
   const [status, setStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [rails, setRails] = useState<BridgeRail[] | null>(null);
+  const [railNote, setRailNote] = useState<string | null>(null);
 
   const src = CHAINS[from];
   const amt = parseFloat(amount) || 0;
@@ -38,9 +47,28 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
     if (from === chainKey && sources.length) setFrom(sources[0]);
   }, [from, chainKey, sources]);
 
+  // Which rails are live for this pair. Re-probed on every pair change, so a
+  // route that opens upstream appears without a redeploy.
+  useEffect(() => {
+    let cancel = false;
+    setRails(null);
+    setRailNote(null);
+    availableRails(from, chainKey).then((r) => {
+      if (cancel) return;
+      setRails(r.rails);
+      setRailNote(r.reason ?? null);
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [from, chainKey]);
+
+  const rail: BridgeRail | null = rails?.[0] ?? null;
+  const cctpOnly = rail === "cctp";
+
   // Live quote, debounced.
   useEffect(() => {
-    if (!wallet.address || amt <= 0) {
+    if (!wallet.address || amt <= 0 || rail !== "relay") {
       setQuote(null);
       return;
     }
@@ -62,7 +90,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
       cancel = true;
       clearTimeout(id);
     };
-  }, [wallet.address, amount, amt, from, chainKey, src.nativeCurrency.decimals]);
+  }, [wallet.address, amount, amt, from, chainKey, rail, src.nativeCurrency.decimals]);
 
   async function onBridge() {
     setStatus(null);
@@ -79,10 +107,6 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
         return;
       }
     }
-    if (!quote?.ok) {
-      setStatus(quote?.reason ?? "Enter an amount to get a route.");
-      return;
-    }
     const client = wallet.getWalletClient(src);
     if (!client) {
       setStatus("Wallet unavailable.");
@@ -91,14 +115,37 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
 
     setBusy(true);
     try {
-      const hash = await executeBridge({
-        quote,
-        walletClient: client,
-        account: wallet.address,
-        from,
-        onProgress: (p) => setStatus(p.message),
-      });
-      if (hash) setTxHash(hash);
+      if (cctpOnly) {
+        // Circle's own rail: burn native USDC here, mint it there. Amount is in
+        // the USDC ERC-20's units, not the 18-decimal native view.
+        const usdcDecimals = src.stablecoin?.decimals ?? 6;
+        const hash = await bridgeViaCctp({
+          from: { key: from, cfg: src },
+          to: { key: chainKey, cfg: chain },
+          amount: parseUnits(amount, usdcDecimals),
+          account: wallet.address,
+          sourceWallet: client,
+          destinationWallet: async () => {
+            const ok = await wallet.ensureChain(chain);
+            return ok ? wallet.getWalletClient(chain) : null;
+          },
+          onProgress: (p) => setStatus(p.message),
+        });
+        if (hash) setTxHash(hash);
+      } else {
+        if (!quote?.ok) {
+          setStatus(quote?.reason ?? "Enter an amount to get a route.");
+          return;
+        }
+        const hash = await executeBridge({
+          quote,
+          walletClient: client,
+          account: wallet.address,
+          from,
+          onProgress: (p) => setStatus(p.message),
+        });
+        if (hash) setTxHash(hash);
+      }
     } catch (e) {
       setStatus(e instanceof Error ? e.message.split("\n")[0] : "Bridge failed.");
     } finally {
@@ -106,18 +153,28 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
     }
   }
 
+  const noRoute = rails != null && rails.length === 0;
   const label = !wallet.address
     ? "Connect wallet"
     : busy
       ? "Confirm in wallet…"
-      : `Bridge to ${chain.shortName}`;
+      : noRoute
+        ? "Route not open yet"
+        : `Bridge to ${chain.shortName}`;
+  const sendSymbol = cctpOnly
+    ? usdcAddress(src)
+      ? "USDC"
+      : src.nativeCurrency.symbol
+    : src.nativeCurrency.symbol;
 
   return (
     <section className={bare ? "" : "card-surface p-4"}>
       {!bare && (
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium">Bridge in funds</h3>
-          <span className="chip !py-0 text-[9px]">via Relay</span>
+          <span className="chip !py-0 text-[9px]">
+            {rail === "cctp" ? "via Circle CCTP" : rail === "relay" ? "via Relay" : "checking…"}
+          </span>
         </div>
       )}
 
@@ -140,7 +197,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
       <div className="mt-2 rounded-xl border border-border bg-background p-3">
         <div className="flex justify-between text-[11px] text-muted-foreground">
           <span>You send</span>
-          <span>{src.nativeCurrency.symbol}</span>
+          <span>{sendSymbol}</span>
         </div>
         <input
           value={amount}
@@ -156,11 +213,15 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
           label="You receive"
           value={
             <span className="num">
-              {quoting
-                ? "…"
-                : quote?.ok
-                  ? `${quote.amountOut} ${chain.nativeCurrency.symbol}`
-                  : "—"}
+              {cctpOnly
+                ? amt > 0
+                  ? `${amount} USDC`
+                  : "—"
+                : quoting
+                  ? "…"
+                  : quote?.ok
+                    ? `${quote.amountOut} ${chain.nativeCurrency.symbol}`
+                    : "—"}
             </span>
           }
         />
@@ -168,9 +229,11 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
           label="Arrives in"
           value={
             <span className="num">
-              {quote?.ok && quote.etaSeconds
-                ? `~${Math.max(1, Math.round(quote.etaSeconds / 60))} min`
-                : "—"}
+              {cctpOnly
+                ? "~1–15 min"
+                : quote?.ok && quote.etaSeconds
+                  ? `~${Math.max(1, Math.round(quote.etaSeconds / 60))} min`
+                  : "—"}
             </span>
           }
         />
@@ -178,7 +241,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
 
       <button
         onClick={onBridge}
-        disabled={busy}
+        disabled={busy || noRoute}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
@@ -200,8 +263,13 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
           )}
         </p>
       )}
+      {noRoute && railNote && (
+        <p className="mt-2 text-center text-[11px] text-muted-foreground">{railNote}</p>
+      )}
       <p className="mt-2 text-center text-[10px] text-muted-foreground">
-        Non-custodial · settled by Relay · funds go straight to your wallet.
+        Non-custodial ·{" "}
+        {rail === "cctp" ? "native USDC burned and minted by Circle" : "settled by Relay"} · funds
+        go straight to your wallet.
       </p>
     </section>
   );

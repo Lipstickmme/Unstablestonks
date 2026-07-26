@@ -70,6 +70,12 @@ export interface ChainConfig {
   /** Extra tokens worth quoting a hop through (e.g. EURC on Arc). */
   extraRoutingBases?: `0x${string}`[];
   /**
+   * Circle CCTP domain id, when the chain is (or will be) a CCTP domain. Set
+   * does NOT mean live — bridge.ts probes the contracts on-chain before
+   * offering the route. Arc is domain 26.
+   */
+  cctpDomain?: number;
+  /**
    * True on chains where a value transfer to the zero address reverts rather
    * than burning (Arc enforces this at runtime, since the gas asset is USDC).
    */
@@ -102,11 +108,15 @@ function env(key: string): string | undefined {
 const isAddr = (v: string | undefined): v is string => Boolean(v && /^0x[0-9a-fA-F]{40}$/.test(v));
 
 /**
- * Circle has not launched Arc mainnet — its docs publish testnet endpoints only.
- * Set VITE_ARC_MAINNET=1 to move the whole Arc entry (id, RPC, explorer, label)
- * onto mainnet the day it ships, without touching this file.
+ * Arc runs on mainnet. VITE_ARC_TESTNET=1 points the whole entry (id, RPC,
+ * explorer, label) back at Circle's public testnet.
+ *
+ * The mainnet chain id below is provisional: Circle's docs weren't reachable to
+ * confirm it, so it is VERIFIED AT RUNTIME instead — resolveChainIds() asks each
+ * RPC for eth_chainId at startup and corrects the registry if it differs. A
+ * wrong constant here cannot reach the wallet.
  */
-const ARC_MAINNET = env("VITE_ARC_MAINNET") === "1";
+const ARC_TESTNET = env("VITE_ARC_TESTNET") === "1";
 
 /**
  * Router config from env, per chain:
@@ -225,24 +235,24 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // so the chain runs on testnet and VITE_ARC_MAINNET=1 flips the whole entry
     // (id, RPC, explorer, label) the moment mainnet ships. Every endpoint is
     // individually overridable too, so no redeploy of this file is needed.
-    id: ARC_MAINNET ? Number(env("VITE_CHAIN_ID_ARC") ?? 5042) : 5042002,
+    id: ARC_TESTNET ? 5042002 : Number(env("VITE_CHAIN_ID_ARC") ?? 5042),
     name: "Arc",
     shortName: "ARC",
     badge: "A",
-    network: ARC_MAINNET ? "mainnet" : "testnet",
-    live: ARC_MAINNET,
+    network: ARC_TESTNET ? "testnet" : "mainnet",
+    live: !ARC_TESTNET,
     rpcUrls: [
       env("VITE_RPC_ARC") ??
-        (ARC_MAINNET ? "https://rpc.arc.network" : "https://rpc.testnet.arc.network"),
+        (ARC_TESTNET ? "https://rpc.testnet.arc.network" : "https://rpc.arc.network"),
     ],
     explorerUrl:
       env("VITE_EXPLORER_ARC") ??
-      (ARC_MAINNET ? "https://arcscan.app" : "https://testnet.arcscan.app"),
+      (ARC_TESTNET ? "https://testnet.arcscan.app" : "https://arcscan.app"),
     explorer: {
       kind: "blockscout",
       apiBase:
         env("VITE_EXPLORER_API_ARC") ??
-        (ARC_MAINNET ? "https://arcscan.app/api/v2" : "https://testnet.arcscan.app/api/v2"),
+        (ARC_TESTNET ? "https://testnet.arcscan.app/api/v2" : "https://arcscan.app/api/v2"),
     },
     // Arc's gas asset IS USDC, and the native view carries 18 decimals while the
     // ERC-20 view of the SAME funds carries 6 (a 10^12 conversion factor). This
@@ -260,7 +270,9 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     },
     // Arc documents no wrapped-native token, so — exactly as on Stable — swaps
     // route through the ERC-20 view of the gas asset (mode "erc20"): approve +
-    // transferFrom rather than sending native value.
+    // transferFrom rather than sending native value. The mainnet USDC address is
+    // the same predeploy slot as testnet; override with VITE_USDC_ARC if Circle
+    // publishes a different one.
     wrappedNative: env("VITE_WNATIVE_ARC") as `0x${string}` | undefined,
     intermediary: {
       address: (env("VITE_INTERMEDIARY_ARC") ??
@@ -287,9 +299,10 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     dyorSlug: "arc",
     dexscreenerSlug: env("VITE_DS_NETWORK_ARC") ?? "arc",
     accent: "oklch(0.72 0.16 250)", // Circle blue
-    tagline: ARC_MAINNET
-      ? "Circle L1 · USDC is the gas · programmable money"
-      : "Circle L1 · USDC is the gas · public testnet",
+    cctpDomain: 26,
+    tagline: ARC_TESTNET
+      ? "Circle L1 · USDC is the gas · public testnet"
+      : "Circle L1 · USDC is the gas · programmable money",
   },
 };
 

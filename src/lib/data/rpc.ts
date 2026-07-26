@@ -75,6 +75,46 @@ export function toViemChain(cfg: ChainConfig): Chain {
 
 const clientCache = new Map<number, PublicClient>();
 
+/**
+ * Ask each chain's own RPC what its id is, and correct the registry when the
+ * configured value is wrong.
+ *
+ * A hardcoded chain id is a liability on a network that just launched: get it
+ * wrong and `wallet_addEthereumChain` registers a bogus network in the user's
+ * wallet and every read fails. eth_chainId from the chain itself is
+ * authoritative, costs one request, and makes the constant in chains.ts a hint
+ * rather than a dependency. Runs once at startup; failures leave the config
+ * value in place.
+ */
+export async function resolveChainIds(): Promise<void> {
+  await Promise.all(
+    (Object.keys(CHAINS) as ChainKey[]).map(async (key) => {
+      const cfg = CHAINS[key];
+      const url = cfg.rpcUrls[0];
+      if (!url) return;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 6_000);
+        const res = await fetch(url, {
+          method: "POST",
+          signal: ctrl.signal,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+        }).finally(() => clearTimeout(timer));
+        if (!res.ok) return;
+        const body = (await res.json()) as { result?: string };
+        const actual = body?.result ? parseInt(body.result, 16) : NaN;
+        if (!isFinite(actual) || actual <= 0 || actual === cfg.id) return;
+        // The cached client was keyed and built with the stale id — drop it.
+        clientCache.delete(cfg.id);
+        cfg.id = actual;
+      } catch {
+        /* unreachable RPC: keep the configured id */
+      }
+    }),
+  );
+}
+
 export function getPublicClient(key: ChainKey): PublicClient {
   const cfg = CHAINS[key];
   const cached = clientCache.get(cfg.id);

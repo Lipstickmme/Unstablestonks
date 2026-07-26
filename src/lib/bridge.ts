@@ -1,5 +1,6 @@
 import type { WalletClient } from "viem";
 import { CHAINS, type ChainKey } from "@/config/chains";
+import { cctpStatus } from "./cctp";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-chain bridging via Relay (https://relay.link).
@@ -14,6 +15,83 @@ import { CHAINS, type ChainKey } from "@/config/chains";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RELAY_API = "https://api.relay.link";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Route availability, discovered at runtime.
+//
+// Arc launched days ago and its bridges are not open yet. Rather than hardcode
+// "unsupported" (which would need a redeploy the day it opens) or hardcode
+// "supported" (which would show a button that reverts), both rails are probed:
+//
+//   Relay — GET /chains lists every chain it routes. Cached for 10 minutes.
+//   CCTP  — the contracts are checked for deployed code on both chains.
+//
+// The bridge lights up on its own the moment either rail adds the chain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let relayChains: { ids: Set<number>; ts: number } | null = null;
+const RELAY_CHAINS_TTL = 10 * 60_000;
+
+async function relaySupportedChainIds(): Promise<Set<number>> {
+  if (relayChains && Date.now() - relayChains.ts < RELAY_CHAINS_TTL) return relayChains.ids;
+  const ids = new Set<number>();
+  try {
+    const res = await fetch(`${RELAY_API}/chains`);
+    if (res.ok) {
+      const body = (await res.json()) as { chains?: { id?: number }[] };
+      for (const c of body.chains ?? []) if (typeof c.id === "number") ids.add(c.id);
+    }
+  } catch {
+    /* unreachable — treat as unknown, see relaySupports */
+  }
+  // Only cache a real answer; an empty set means "couldn't tell", and caching
+  // that would suppress the route for ten minutes after a transient failure.
+  if (ids.size) relayChains = { ids, ts: Date.now() };
+  return ids;
+}
+
+/** True when Relay routes this chain. Unknown (API down) counts as yes — the
+ *  quote itself is the real check and reports its own reason. */
+export async function relaySupports(chainId: number): Promise<boolean> {
+  const ids = await relaySupportedChainIds();
+  return ids.size === 0 || ids.has(chainId);
+}
+
+export type BridgeRail = "relay" | "cctp";
+
+export interface BridgeRoutes {
+  /** Rails that can carry this pair right now, best first. */
+  rails: BridgeRail[];
+  /** Why nothing is available, when rails is empty. */
+  reason?: string;
+}
+
+/**
+ * Which rails can move funds between two chains at this moment. CCTP is
+ * preferred where both ends support it: it mints native USDC rather than a
+ * wrapped asset, and on Arc that IS the gas token.
+ */
+export async function availableRails(from: ChainKey, to: ChainKey): Promise<BridgeRoutes> {
+  const src = CHAINS[from];
+  const dst = CHAINS[to];
+
+  const [cctp, relayOk] = await Promise.all([
+    cctpStatus({ key: from, cfg: src }, { key: to, cfg: dst }),
+    relaySupports(dst.id).then((ok) => ok && relaySupports(src.id)),
+  ]);
+
+  const rails: BridgeRail[] = [];
+  if (cctp.available) rails.push("cctp");
+  if (relayOk) rails.push("relay");
+
+  if (rails.length) return { rails };
+  return {
+    rails: [],
+    reason:
+      cctp.reason ??
+      `No bridge route between ${src.name} and ${dst.name} yet — this opens automatically when one is live.`,
+  };
+}
 
 /** Relay uses the zero address for a chain's native currency. */
 export const NATIVE = "0x0000000000000000000000000000000000000000" as const;

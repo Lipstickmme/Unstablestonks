@@ -7,6 +7,7 @@ import {
   type ChainConfig,
   type ChainKey,
 } from "@/config/chains";
+import { resolveChainIds } from "./data/rpc";
 
 const STORAGE_KEY = "ustonks.chain";
 
@@ -35,6 +36,10 @@ export function ChainProvider({ children }: { children: ReactNode }) {
   // Hydrate from localStorage on the client after mount (SSR-safe).
   useEffect(() => {
     setChainKeyState(readStored());
+    // Ask each RPC for its real chain id and correct the registry. Arc launched
+    // recently enough that its published id could not be confirmed from a
+    // primary source, and a wrong id would otherwise reach the wallet.
+    void resolveChainIds();
   }, []);
 
   // Reflect the active chain's accent on the document root so the whole UI reskins.
