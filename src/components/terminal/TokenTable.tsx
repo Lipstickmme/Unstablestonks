@@ -5,6 +5,8 @@ import type { TokenRow, TokenStatus } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
 import { useSourceCounts, type TokenInsight } from "@/lib/data/hooks";
 import { BASE_BOT_URL } from "@/config/links";
+import { venueLogo } from "@/config/brand";
+import { BrandImage } from "@/components/brand/BrandImage";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
@@ -127,10 +129,19 @@ function Sparkline({ points, positive }: { points?: number[]; positive: boolean 
 function VenueCell({ t }: { t: TokenRow }) {
   const venue = t.launchpadName ?? t.dexName;
   if (!venue) return <span className="text-[11px] text-muted-foreground">—</span>;
+  const logo = venueLogo(venue);
   return (
     <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
       {t.launchpadName && <Rocket className="h-3 w-3 text-grad" />}
-      {venue}
+      {/* Venues we have artwork for show the mark alone; the rest keep their
+          name, so an unbranded DEX is never reduced to a blank cell. */}
+      <BrandImage
+        src={logo}
+        alt={venue}
+        className="h-3.5 w-3.5 rounded-sm object-contain"
+        fallback={<span className="truncate">{venue}</span>}
+      />
+      {logo && <span className="sr-only">{venue}</span>}
     </span>
   );
 }

@@ -18,6 +18,8 @@ import {
   type ChartTimeframe,
 } from "@/lib/data/hooks";
 import { BASE_BOT_URL } from "@/config/links";
+import { venueLogo } from "@/config/brand";
+import { BrandImage } from "@/components/brand/BrandImage";
 import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { ArrowLeft, BadgeCheck, Copy, ExternalLink, Rocket, Send, Users } from "lucide-react";
@@ -119,7 +121,15 @@ function TokenDetail() {
                         </span>
                       ) : (
                         token.dexName && (
-                          <span className="chip !py-0 text-[9px]">{token.dexName}</span>
+                          <span className="chip !py-0 text-[9px]">
+                            <BrandImage
+                              src={venueLogo(token.dexName)}
+                              alt={token.dexName}
+                              className="h-3 w-3 rounded-sm object-contain"
+                              fallback={<></>}
+                            />
+                            {token.dexName}
+                          </span>
                         )
                       )}
                     </div>

@@ -12,7 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
-import { BRAND_IMAGE_URL, BRAND_IMAGE_ORIGIN } from "../config/brand";
+import { BRAND_IMAGE_URL, BRAND_CARD_URL } from "../config/brand";
 import { WalletProvider } from "../lib/wallet";
 import { WatchlistProvider } from "../lib/watchlist";
 import { Toaster } from "../components/ui/sonner";
@@ -84,7 +84,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content:
           "Switch between Robinhood Chain, Stable, and Arc. Live on-chain intelligence, X social crawl, and non-custodial swaps.",
       },
-      { property: "og:image", content: BRAND_IMAGE_URL },
+      { property: "og:image", content: BRAND_CARD_URL },
       { property: "og:image:alt", content: "UnstableStonks" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -94,7 +94,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content:
           "Switch between Robinhood Chain, Stable, and Arc. Live on-chain intelligence, X social crawl, and non-custodial swaps.",
       },
-      { name: "twitter:image", content: BRAND_IMAGE_URL },
+      { name: "twitter:image", content: BRAND_CARD_URL },
       { name: "theme-color", content: "#0b0b0d" },
     ],
     links: [
@@ -105,7 +105,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "apple-touch-icon", href: BRAND_IMAGE_URL },
       // Kept last as the fallback if the gateway can't be reached.
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
-      { rel: "preconnect", href: BRAND_IMAGE_ORIGIN },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {

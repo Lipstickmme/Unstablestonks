@@ -47,8 +47,10 @@ export interface ChainConfig {
   id: number;
   name: string;
   shortName: string;
-  /** Header badge glyph. */
+  /** Header badge glyph — the fallback when the logo image can't load. */
   badge: string;
+  /** Chain logo, served from /public. */
+  logoUrl?: string;
   network: "mainnet" | "testnet";
   /** Whether the network is live in production (Arc is testnet-only for now). */
   live: boolean;
@@ -146,6 +148,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     name: "Robinhood Chain",
     shortName: "RH",
     badge: "R",
+    logoUrl: "/robinhoodlogo.png",
     network: "mainnet",
     live: true,
     rpcUrls: [env("VITE_RPC_ROBINHOOD") ?? "https://rpc.mainnet.chain.robinhood.com"],
@@ -177,6 +180,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     name: "Stable",
     shortName: "USDT0",
     badge: "S",
+    logoUrl: "/stablelogo.jpeg",
     network: "mainnet",
     live: true,
     rpcUrls: [env("VITE_RPC_STABLE") ?? "https://rpc.stable.xyz"],
@@ -239,6 +243,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     name: "Arc",
     shortName: "ARC",
     badge: "A",
+    logoUrl: "/arclogo.jpeg",
     network: ARC_TESTNET ? "testnet" : "mainnet",
     live: !ARC_TESTNET,
     rpcUrls: [

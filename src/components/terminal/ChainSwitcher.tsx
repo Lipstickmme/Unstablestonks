@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { CHAIN_ORDER, CHAINS } from "@/config/chains";
 import { useChain } from "@/lib/chain-context";
+import { BrandImage } from "@/components/brand/BrandImage";
 
 export function ChainSwitcher() {
   const { chainKey, chain, setChainKey } = useChain();
@@ -24,12 +25,19 @@ export function ChainSwitcher() {
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span
-          className="grid h-4 w-4 flex-shrink-0 place-items-center rounded font-mono text-[10px] font-bold text-black"
-          style={{ background: chain.accent }}
-        >
-          {chain.badge}
-        </span>
+        <BrandImage
+          src={chain.logoUrl}
+          alt={chain.name}
+          className="h-4 w-4 flex-shrink-0 rounded object-cover"
+          fallback={
+            <span
+              className="grid h-4 w-4 flex-shrink-0 place-items-center rounded font-mono text-[10px] font-bold text-black"
+              style={{ background: chain.accent }}
+            >
+              {chain.badge}
+            </span>
+          }
+        />
         <span className="font-mono">{chain.shortName}</span>
         <span className="hidden sm:inline text-muted-foreground">· {chain.id}</span>
         <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -56,12 +64,19 @@ export function ChainSwitcher() {
                   active ? "bg-surface-elevated" : ""
                 }`}
               >
-                <span
-                  className="mt-0.5 grid h-7 w-7 flex-shrink-0 place-items-center rounded-md font-mono text-xs font-bold text-black"
-                  style={{ background: c.accent }}
-                >
-                  {c.badge}
-                </span>
+                <BrandImage
+                  src={c.logoUrl}
+                  alt={c.name}
+                  className="mt-0.5 h-7 w-7 flex-shrink-0 rounded-md object-cover"
+                  fallback={
+                    <span
+                      className="mt-0.5 grid h-7 w-7 flex-shrink-0 place-items-center rounded-md font-mono text-xs font-bold text-black"
+                      style={{ background: c.accent }}
+                    >
+                      {c.badge}
+                    </span>
+                  }
+                />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
                     <span className="text-sm font-medium">{c.name}</span>

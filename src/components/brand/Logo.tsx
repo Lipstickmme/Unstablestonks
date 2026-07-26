@@ -2,8 +2,8 @@
 // shades kept as a fallback so the header never renders an empty box if the
 // gateway is slow or blocked.
 
-import { useState } from "react";
 import { BRAND_IMAGE_URL } from "@/config/brand";
+import { BrandImage } from "./BrandImage";
 
 export function ShadesMark({ className = "", size = 28 }: { className?: string; size?: number }) {
   // 16x6 pixel grid of the classic blocky sunglasses.
@@ -39,26 +39,21 @@ export function ShadesMark({ className = "", size = 28 }: { className?: string; 
 }
 
 export function Logo({ compact = false }: { compact?: boolean }) {
-  const [failed, setFailed] = useState(false);
-
   return (
     <span className="flex items-center gap-2 select-none">
-      {failed ? (
-        <span className="grid place-items-center rounded-md bg-foreground px-1.5 py-1 text-background">
-          <ShadesMark size={22} />
-        </span>
-      ) : (
-        <img
-          src={BRAND_IMAGE_URL}
-          alt="UnstableStonks"
-          width={28}
-          height={28}
-          loading="eager"
-          decoding="async"
-          onError={() => setFailed(true)}
-          className="h-7 w-7 rounded-md object-cover"
-        />
-      )}
+      <BrandImage
+        src={BRAND_IMAGE_URL}
+        alt="UnstableStonks"
+        className="h-7 w-7 rounded-md object-cover"
+        fallback={
+          <span className="grid place-items-center rounded-md bg-foreground px-1.5 py-1 text-background">
+            <ShadesMark size={22} />
+          </span>
+        }
+      />
+      {/* The wordmark stays as live text: the mark is a 193x184 square whose own
+          lettering is unreadable at header size. A wide (~3:1) lockup could
+          replace both — see BRAND_IMAGE_URL. */}
       {!compact && (
         <span className="font-mono text-sm font-bold tracking-tight leading-none">
           UNSTABLE<span className="text-primary">STONKS</span>
