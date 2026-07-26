@@ -14,6 +14,7 @@ import {
   useTokenDetail,
   useTokens,
   useTokenCandles,
+  useTokenActivity,
   useTokenInsights,
   type ChartTimeframe,
 } from "@/lib/data/hooks";
@@ -59,6 +60,11 @@ function TokenDetail() {
   const shareOfVoice = useShareOfVoice(address, peers);
 
   const token = data?.token;
+  // Holders + trades load behind the core so the header, stats and chart paint
+  // as soon as identity and market data are known.
+  const activityQ = useTokenActivity(address, token, data?.pool ?? null);
+  const holders = activityQ.data?.holders ?? data?.holders ?? [];
+  const trades = activityQ.data?.trades ?? data?.trades ?? [];
   // Distribution + listing intel for this one token, on the shared slow cycle.
   const insightsQ = useTokenInsights(token ? [token] : undefined);
   const insight = token ? insightsQ.data?.[token.address] : undefined;
@@ -163,8 +169,13 @@ function TokenDetail() {
                   { l: "24h volume", v: token.vol24h > 0 ? formatUSD(token.vol24h) : "—" },
                   { l: "Holders", v: token.holders > 0 ? formatNum(token.holders) : "—" },
                   {
+                    // Comes from the activity query once it lands; the row's own
+                    // figure covers the gap so the tile isn't blank on arrival.
                     l: "Top holder",
-                    v: token.topHolderPct > 0 ? `${token.topHolderPct.toFixed(1)}%` : "—",
+                    v: (() => {
+                      const pct = holders[0]?.pct ?? token.topHolderPct;
+                      return pct > 0 ? `${pct.toFixed(1)}%` : "—";
+                    })(),
                   },
                 ].map((s) => (
                   <div key={s.l} className="bg-surface px-4 py-3">
@@ -282,12 +293,14 @@ function TokenDetail() {
                     <span className="text-[11px] text-muted-foreground">from explorer · live</span>
                   </div>
                   <div className="mt-3 space-y-1.5">
-                    {data.holders.length === 0 && (
+                    {holders.length === 0 && (
                       <p className="py-2 text-xs text-muted-foreground">
-                        Holder distribution not indexed yet.
+                        {activityQ.isLoading
+                          ? "Loading holder distribution…"
+                          : "Holder distribution not indexed yet."}
                       </p>
                     )}
-                    {data.holders.map((h, i) => (
+                    {holders.map((h, i) => (
                       <div key={h.address + i} className="flex items-center gap-3">
                         <span className="num w-4 text-[11px] text-muted-foreground">{i + 1}</span>
                         <a
@@ -302,7 +315,7 @@ function TokenDetail() {
                           <div
                             className="h-full bg-primary/70"
                             style={{
-                              width: `${Math.min(100, (h.pct / (data.holders[0]?.pct || 1)) * 100)}%`,
+                              width: `${Math.min(100, (h.pct / (holders[0]?.pct || 1)) * 100)}%`,
                             }}
                           />
                         </div>
@@ -331,9 +344,9 @@ function TokenDetail() {
                   shareOfVoice={shareOfVoice}
                 />
                 <BridgePanel />
-                <BundleWatch trades={data.trades} />
-                <WhaleWatch trades={data.trades} />
-                <LiveTrades trades={data.trades} />
+                <BundleWatch trades={trades} />
+                <WhaleWatch trades={trades} />
+                <LiveTrades trades={trades} />
               </div>
             </div>
           </>

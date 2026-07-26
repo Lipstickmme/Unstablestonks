@@ -27,6 +27,13 @@ export function BridgePanel() {
   const src = CHAINS[from];
   const amt = parseFloat(amount) || 0;
 
+  // Switching the terminal to the chain currently selected as the source would
+  // leave origin === destination, which Relay rejects with a bare "no route".
+  // Move the selection to another chain instead.
+  useEffect(() => {
+    if (from === chainKey && sources.length) setFrom(sources[0]);
+  }, [from, chainKey, sources]);
+
   // Live quote, debounced.
   useEffect(() => {
     if (!wallet.address || amt <= 0) {

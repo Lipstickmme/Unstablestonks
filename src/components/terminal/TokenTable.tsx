@@ -11,9 +11,15 @@ import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
 import { TokenIcon } from "./TokenIcon";
 import {
+  Activity,
   ArrowDown,
+  ArrowLeftRight,
   ArrowUp,
   Copy,
+  PieChart,
+  Store,
+  UserCog,
+  Users,
   ExternalLink,
   Flame,
   Zap,
@@ -305,15 +311,50 @@ export function TokenTable({
     }
   }
 
-  const H = ({ k, label, right }: { k: SortKey; label: string; right?: boolean }) => (
+  /**
+   * Sortable column header. Long labels are replaced by an icon with the words
+   * moved into the tooltip — the header text was setting the minimum width of
+   * columns holding two or three characters of data, which is what pushed the
+   * Buy button off-screen.
+   */
+  const H = ({
+    k,
+    label,
+    icon,
+    right,
+  }: {
+    k: SortKey;
+    label: string;
+    icon?: React.ReactNode;
+    right?: boolean;
+  }) => (
     <button
       onClick={() => toggleSort(k)}
+      title={label}
       className={`flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors ${right ? "ml-auto" : ""}`}
     >
-      {label}
+      {icon ?? label}
       {sort === k &&
         (dir === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />)}
     </button>
+  );
+
+  /** Non-sortable icon header. */
+  const Ico = ({
+    label,
+    icon,
+    center,
+  }: {
+    label: string;
+    icon: React.ReactNode;
+    center?: boolean;
+  }) => (
+    <span
+      title={label}
+      className={`flex items-center text-muted-foreground ${center ? "justify-center" : "justify-end"}`}
+    >
+      {icon}
+    </span>
   );
 
   return (
@@ -356,58 +397,68 @@ export function TokenTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-elevated/40 text-left">
-              <th className="w-[22%] px-4 py-2.5">
+              <th className="w-[168px] px-3 py-2">
                 <H k="age" label="Token" />
               </th>
-              <th className="px-2 py-2.5">
+              <th className="px-1.5 py-2">
                 <H k="age" label="Age" />
               </th>
-              <th className="px-2 py-2.5 text-right">
-                <H k="priceChange24h" label="Price 24h" right />
+              <th className="px-1.5 py-2 text-right">
+                <H k="priceChange24h" label="Price / 24h change" icon={<>PRICE</>} right />
               </th>
-              <th className="px-2 py-2.5 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Trend
+              <th className="px-1.5 py-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <Ico label="Trend" icon={<Activity className="h-3.5 w-3.5" />} center />
               </th>
-              <th className="px-2 py-2.5 text-right">
-                <H k="mcap" label="Mkt cap" right />
+              <th className="px-1.5 py-2 text-right">
+                <div className="flex items-center justify-end gap-1">
+                  <H k="mcap" label="Market cap" icon={<>MC</>} />
+                  <span className="text-[10px] text-muted-foreground/40">/</span>
+                  <H k="vol24h" label="24h volume" icon={<>VOL</>} />
+                </div>
               </th>
-              <th className="px-2 py-2.5 text-right">
-                <H k="vol24h" label="V·24h" right />
+              <th className="px-1.5 py-2 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  <Ico
+                    label="Buys / sells, 24h"
+                    icon={<ArrowLeftRight className="h-3.5 w-3.5" />}
+                  />
+                  <span className="text-[10px] text-muted-foreground/40">/</span>
+                  <H k="holders" label="Holders" icon={<Users className="h-3.5 w-3.5" />} />
+                </div>
               </th>
-              <th className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Txns 24h
+              <th className="px-1.5 py-2 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  <Ico
+                    label="Dev holding / top 10 holders, as a share of supply"
+                    icon={<UserCog className="h-3.5 w-3.5" />}
+                  />
+                  <span className="text-[10px] text-muted-foreground/40">/</span>
+                  <Ico label="Top 10 holders" icon={<PieChart className="h-3.5 w-3.5" />} />
+                </div>
               </th>
-              <th className="px-2 py-2.5 text-right">
-                <H k="holders" label="Holders" right />
+              <th className="px-1.5 py-2 text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                  <Ico label="Same-block bundles" icon={<Boxes className="h-3.5 w-3.5" />} center />
+                  <span className="text-[10px] text-muted-foreground/40">/</span>
+                  <Ico
+                    label="DexScreener paid listing"
+                    icon={<BadgeCheck className="h-3.5 w-3.5" />}
+                    center
+                  />
+                </div>
               </th>
-              <th className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Bundles
+              <th className="px-1.5 py-2">
+                <div className="flex items-center gap-1.5">
+                  <Ico label="Trading venue" icon={<Store className="h-3.5 w-3.5" />} center />
+                  <span className="text-[10px] text-muted-foreground/40">/</span>
+                  <H
+                    k="socialHeat"
+                    label="X social heat"
+                    icon={<Flame className="h-3.5 w-3.5" />}
+                  />
+                </div>
               </th>
-              <th
-                className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
-                title="Deployer's current balance as a share of supply"
-              >
-                Dev
-              </th>
-              <th
-                className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
-                title="Combined share held by the ten largest holders"
-              >
-                Top 10
-              </th>
-              <th
-                className="px-2 py-2.5 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
-                title="Whether the team paid DexScreener for enhanced token info"
-              >
-                DEX paid
-              </th>
-              <th className="px-2 py-2.5">
-                <H k="graduationPct" label="Venue" />
-              </th>
-              <th className="px-2 py-2.5">
-                <H k="socialHeat" label="Social" />
-              </th>
-              <th className="px-4 py-2.5 text-right text-[10px] uppercase tracking-wider text-muted-foreground">
+              <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wider text-muted-foreground">
                 Trade
               </th>
             </tr>
@@ -415,7 +466,7 @@ export function TokenTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={15} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={10} className="px-4 py-16 text-center text-sm text-muted-foreground">
                   {watchOnly
                     ? "Your watchlist is empty. Tap the ☆ on any token to add it."
                     : loading
@@ -431,30 +482,28 @@ export function TokenTable({
                 key={t.address}
                 className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
               >
-                <td className="px-4 py-3">
+                <td className="px-3 py-2">
                   <Link
                     to="/token/$address"
                     params={{ address: t.address }}
-                    className="flex items-center gap-3"
+                    className="flex items-center gap-2"
                   >
-                    <TokenIcon url={t.logoUrl} symbol={t.symbol} size={30} />
+                    <TokenIcon url={t.logoUrl} symbol={t.symbol} size={26} />
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate font-medium">{t.symbol}</span>
-                        <span className="truncate text-xs text-muted-foreground">{t.name}</span>
-                        <div className="flex gap-1">
-                          {t.status.slice(0, 2).map((s) => (
-                            <StatusBadge key={s} s={s} />
-                          ))}
-                        </div>
+                        <span className="truncate text-[13px] font-medium">{t.symbol}</span>
+                        {t.status.slice(0, 1).map((st) => (
+                          <StatusBadge key={st} s={st} />
+                        ))}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <span className="num">{shortAddr(t.address)}</span>
+                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                        <span className="num truncate">{shortAddr(t.address)}</span>
                         <button
                           onClick={(e) => {
                             e.preventDefault();
                             navigator.clipboard.writeText(t.address);
                           }}
+                          title="Copy contract address"
                           className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
                         >
                           <Copy className="h-3 w-3" />
@@ -464,6 +513,7 @@ export function TokenTable({
                           target="_blank"
                           rel="noreferrer"
                           onClick={(e) => e.stopPropagation()}
+                          title="View on explorer"
                           className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
                         >
                           <ExternalLink className="h-3 w-3" />
@@ -491,75 +541,91 @@ export function TokenTable({
                     </div>
                   </Link>
                 </td>
-                <td className="num px-2 py-3 text-xs text-muted-foreground">
+                <td className="num px-1.5 py-2 text-xs text-muted-foreground">
                   {formatAge(t.ageMinutes)}
                 </td>
-                <td className="px-2 py-3 text-right">
-                  <div className="num text-xs">{t.price > 0 ? formatUSD(t.price) : "—"}</div>
+                <td className="px-1.5 py-2 text-right">
+                  <div className="num text-xs leading-tight">
+                    {t.price > 0 ? formatUSD(t.price) : "—"}
+                  </div>
                   <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
                 </td>
-                <td className="px-2 py-3 text-center">
+                <td className="px-1.5 py-2 text-center">
                   <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
                 </td>
-                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.mcap)}</td>
-                <td className="num px-2 py-3 text-right text-xs">{usdOrDash(t.vol24h)}</td>
-                <td className="px-2 py-3 text-right">
+                {/* Market cap over 24h volume — one column, two figures. */}
+                <td className="px-1.5 py-2 text-right">
+                  <div className="num text-xs leading-tight">{usdOrDash(t.mcap)}</div>
+                  <div className="num text-[11px] leading-tight text-muted-foreground">
+                    {usdOrDash(t.vol24h)}
+                  </div>
+                </td>
+                {/* Buys/sells over holders. */}
+                <td className="px-1.5 py-2 text-right">
                   <Txns24h buys={t.buys24h} sells={t.sells24h} />
+                  <div className="num text-[11px] leading-tight text-muted-foreground">
+                    {t.holders > 0 ? formatNum(t.holders) : "—"}
+                  </div>
                 </td>
-                <td className="num px-2 py-3 text-right text-xs">
-                  {t.holders > 0 ? formatNum(t.holders) : "—"}
+                {/* Dev holding over top-10 concentration. */}
+                <td className="px-1.5 py-2 text-right leading-tight">
+                  <div>
+                    <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
+                  </div>
+                  <div>
+                    <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
+                  </div>
                 </td>
-                <td className="px-2 py-3 text-right">
-                  <BundleCell stats={bundles?.[t.address]} />
+                {/* Bundle risk over DexScreener paid state. */}
+                <td className="px-1.5 py-2 text-center leading-tight">
+                  <div>
+                    <BundleCell stats={bundles?.[t.address]} />
+                  </div>
+                  <div>
+                    <DexPaidCell paid={insights?.[t.address]?.dexPaid} />
+                  </div>
                 </td>
-                <td className="px-2 py-3 text-right">
-                  <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
-                </td>
-                <td className="px-2 py-3 text-right">
-                  <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
-                </td>
-                <td className="px-2 py-3 text-center">
-                  <DexPaidCell paid={insights?.[t.address]?.dexPaid} />
-                </td>
-                <td className="px-2 py-3">
+                {/* Venue over social heat. */}
+                <td className="px-1.5 py-2 leading-tight">
                   <VenueCell t={t} />
-                </td>
-                <td className="px-2 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-14 overflow-hidden rounded-full bg-secondary">
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <div className="h-1 w-10 overflow-hidden rounded-full bg-secondary">
                       <div
                         className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
                         style={{ width: `${t.socialHeat}%` }}
                       />
                     </div>
-                    <span className="num flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <span className="num text-[10px] text-muted-foreground">
                       {t.socialHeat > 0 ? t.socialHeat : "—"}
                     </span>
                   </div>
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    onClick={() => {
-                      // Kick off the wallet prompt from this real click (a user
-                      // gesture) so the wallet doesn't reject it, then open the
-                      // buy modal. No navigation to the token page.
-                      if (!wallet.address) void wallet.connect();
-                      setBuyToken(t);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-                  >
-                    <Zap className="h-3 w-3" /> Buy
-                  </button>
-                  <a
-                    href={BASE_BOT_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    title="Open BaseBot on Telegram"
-                    className="ml-1 inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-                  >
-                    <Send className="h-3 w-3" /> BaseBot
-                  </a>
+                {/* Actions side by side so the row stays one line tall. */}
+                <td className="px-3 py-2">
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      onClick={() => {
+                        // Kick off the wallet prompt from this real click (a user
+                        // gesture) so the wallet doesn't reject it, then open the
+                        // buy modal. No navigation to the token page.
+                        if (!wallet.address) void wallet.connect();
+                        setBuyToken(t);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                    >
+                      <Zap className="h-3 w-3" /> Buy
+                    </button>
+                    <a
+                      href={BASE_BOT_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Open BaseBot on Telegram"
+                      className="inline-flex items-center rounded-md border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                    >
+                      <Send className="h-3 w-3" />
+                    </a>
+                  </div>
                 </td>
               </tr>
             ))}

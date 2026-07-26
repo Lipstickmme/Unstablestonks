@@ -454,7 +454,7 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   const top = (tokens ?? [])
     .filter((t) => t.indexed && t.vol24h > 0)
     .slice(0, 8)
-    .map((t) => ({ address: t.address, symbol: t.symbol }));
+    .map((t) => ({ address: t.address, symbol: t.symbol, pool: t.primaryPool }));
   const key = top.map((t) => t.address).join(",");
   return useQuery<TradeEvent[]>({
     queryKey: ["chain-trades", chainKey, key],
@@ -463,8 +463,11 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
     queryFn: async () => {
       const perToken = await Promise.all(
         top.map(async (t) => {
-          const pools = await fetchTokenPools(chain, t.address).catch(() => []);
-          const pool = pools[0]?.pool;
+          // The list already carries each token's deepest pool, so the extra
+          // pools lookup per token is skipped — it was doubling this hook's
+          // request count and starving the trade feed that whale watch and
+          // bundle detection read from.
+          const pool = t.pool ?? (await fetchTokenPools(chain, t.address).catch(() => []))[0]?.pool;
           if (!pool) return [] as TradeEvent[];
           const trades = await fetchPoolTrades(chain, pool, t.symbol).catch(
             () => [] as TradeEvent[],
@@ -477,15 +480,21 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   });
 }
 
+export interface TokenHolder {
+  address: string;
+  amount: number;
+  pct: number;
+}
+
 export interface TokenDetailData {
   token: TokenRow;
-  holders: { address: string; amount: number; pct: number }[];
+  holders: TokenHolder[];
   trades: TradeEvent[];
   /** Primary (deepest) pool address, when DEX-indexed — feeds the live chart. */
   pool: string | null;
 }
 
-async function loadTokenDetail(
+async function loadTokenCore(
   chain: ChainConfig,
   chainKey: ChainKey,
   address: string,
@@ -578,33 +587,70 @@ async function loadTokenDetail(
   // DYOR is authoritative for curve progress + graduation on all three chains.
   if (dyor) applyDyor(token, dyor);
 
-  // 4. Holders + trades in parallel.
-  const decimals = token.decimals ?? 18;
-  const pool = pools[0]?.pool ?? null;
-  const [holders, transfers, dexTrades] = await Promise.all([
-    fetchTokenHolders(chain, addr, decimals, token.totalSupply ?? 0),
-    fetchTokenTransfers(chain, addr, token.symbol, token.price),
-    pool
-      ? fetchPoolTrades(chain, pool, token.symbol).catch(() => [] as TradeEvent[])
-      : Promise.resolve([] as TradeEvent[]),
-  ]);
-
-  const trades = dexTrades.length
-    ? dexTrades.map((t) => ({ ...t, tokenAddress: addr }))
-    : transfers;
-
-  if (holders[0]) token.topHolderPct = holders[0].pct;
-
-  return { token, holders, trades, pool };
+  // 4. Done — holders and trades load separately so this resolves as early as
+  //    possible and the page can paint.
+  return { token, holders: [], trades: [], pool: pools[0]?.pool ?? null };
 }
 
+/**
+ * Token page data, split in two so the page paints as soon as it can.
+ *
+ * The core query resolves once identity + market data are known; holders and the
+ * trade feed load behind it in `useTokenActivity`. Previously both were awaited
+ * in the same query, so the whole page waited on the slowest explorer call even
+ * though the header, stats and chart only need the core.
+ *
+ * It also starts from the row the terminal list already has cached, so opening a
+ * token from the table renders instantly with real values and then sharpens.
+ */
 export function useTokenDetail(address: string) {
   const { chain, chainKey } = useChain();
+  const addr = address.toLowerCase();
   return useQuery<TokenDetailData>({
-    queryKey: ["token-detail", chainKey, address.toLowerCase()],
+    queryKey: ["token-detail", chainKey, addr],
     refetchInterval: REFRESH,
+    staleTime: 15_000,
     retry: 1,
-    queryFn: () => loadTokenDetail(chain, chainKey, address),
+    initialData: () => {
+      const cached = readCache<TokenRow[]>(`tokens.${chainKey}`, 60 * 60_000);
+      const row = cached?.find((t) => t.address.toLowerCase() === addr);
+      return row
+        ? { token: row, holders: [], trades: [], pool: row.primaryPool ?? null }
+        : undefined;
+    },
+    initialDataUpdatedAt: 0,
+    queryFn: () => loadTokenCore(chain, chainKey, address),
+  });
+}
+
+/** Holders + live trades for the token page — loaded after the core paints. */
+export function useTokenActivity(
+  address: string,
+  token: TokenRow | undefined,
+  pool: string | null,
+) {
+  const { chain, chainKey } = useChain();
+  const addr = address.toLowerCase();
+  return useQuery<{ holders: TokenHolder[]; trades: TradeEvent[] }>({
+    queryKey: ["token-activity", chainKey, addr, pool ?? ""],
+    enabled: Boolean(token),
+    refetchInterval: REFRESH,
+    queryFn: async () => {
+      const decimals = token?.decimals ?? 18;
+      const [holders, transfers, dexTrades] = await Promise.all([
+        fetchTokenHolders(chain, addr, decimals, token?.totalSupply ?? 0, 10).catch(() => []),
+        fetchTokenTransfers(chain, addr, token?.symbol ?? "?", token?.price ?? 0).catch(
+          () => [] as TradeEvent[],
+        ),
+        pool
+          ? fetchPoolTrades(chain, pool, token?.symbol ?? "?").catch(() => [] as TradeEvent[])
+          : Promise.resolve([] as TradeEvent[]),
+      ]);
+      const trades = dexTrades.length
+        ? dexTrades.map((t) => ({ ...t, tokenAddress: addr }))
+        : transfers;
+      return { holders, trades };
+    },
   });
 }
 

@@ -15,6 +15,21 @@ import {
 } from "@/lib/swap";
 import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
 
+/**
+ * Amount for a 25% / 50% / MAX button.
+ *
+ * MAX on a buy leaves a slice of the balance behind for gas — on these chains
+ * the gas token IS the asset being spent, so a literal 100% produced a swap that
+ * could never be paid for. Formatted as a plain decimal because Number.toString
+ * emits exponent notation for small balances, which the amount field and
+ * parseUnits both reject.
+ */
+function presetAmount(balance: number, pct: number): string {
+  const raw = pct === 1 ? balance * 0.99 : balance * pct;
+  if (!isFinite(raw) || raw <= 0) return "";
+  return raw.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 export function SwapPanel({
   token,
   defaultSide = "buy",
@@ -99,8 +114,13 @@ export function SwapPanel({
     }
     if (wrongChain) {
       const ok = await wallet.ensureChain(chain);
-      if (!ok) setStatus(`Switch your wallet to ${chain.name} to continue.`);
-      return;
+      if (!ok) {
+        setStatus(`Switch your wallet to ${chain.name} to continue.`);
+        return;
+      }
+      // Previously this returned unconditionally, so a successful network
+      // switch still swallowed the click and the trade only went through on a
+      // second press. Fall through and execute.
     }
     if (!enabled) return;
     if (!quote?.ok) {
@@ -195,7 +215,7 @@ export function SwapPanel({
               {[0.25, 0.5, 1].map((p) => (
                 <button
                   key={p}
-                  onClick={() => balance != null && setAmount((balance * p).toString())}
+                  onClick={() => balance != null && setAmount(presetAmount(balance, p))}
                   className="rounded px-1.5 py-0.5 text-[10px] hover:bg-surface-elevated"
                 >
                   {p === 1 ? "MAX" : `${p * 100}%`}
