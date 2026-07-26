@@ -10,44 +10,74 @@ import { proxiedFetchJson } from "../net";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 
-// ── Rate limiting + last-good cache ──────────────────────────────────────────
-// The free tier allows ~30 calls/min. Exceeding it returns 429s, which used to
-// surface as EMPTY data and wiped good rows off the terminal. Two guards:
-//   1. A token bucket that spaces requests so we stay under the limit.
-//   2. A per-path cache that serves the last SUCCESSFUL response whenever a
-//      request fails or is throttled — stale real data always beats no data.
-const MIN_INTERVAL_MS = 2_100; // ~28 requests/minute
-const RESPONSE_TTL_MS = 90_000;
+// ── Request pacing + last-good cache ─────────────────────────────────────────
+// The free tier allows ~30 calls/min. Exceeding it returns 429s, which surfaced
+// as EMPTY data and wiped good rows off the terminal.
+//
+// The first attempt at a guard was a fixed 2.1s token bucket, and it was worse
+// than the problem: a refresh cycle issues ~14 calls (2 pool lists + 8 row
+// enrichments + 4 trade feeds), so the last one landed ~29s after the first,
+// and because the bucket's cursor carried across cycles the queue never drained
+// on a 30s refetch — it drifted further behind every tick. The terminal filled
+// in slowly, partially, and eventually went stale.
+//
+// Requests now go out in parallel with two cheap guards instead:
+//   1. A concurrency cap, so a burst is bounded but never artificially delayed.
+//   2. A short cooldown entered only AFTER a request actually fails, during
+//      which callers with cached data are served from it instead of piling on.
+// The per-path cache still serves the last SUCCESSFUL body whenever a request
+// fails — stale real data always beats no data.
+const CACHE_TTL_MS = 20_000; // under the 30s refresh cycle, so rows stay live
+const MAX_CONCURRENT = 5;
+const COOLDOWN_MS = 6_000;
 
-let nextSlot = 0;
 const responseCache = new Map<string, { ts: number; data: unknown }>();
+let inFlight = 0;
+let cooldownUntil = 0;
+const waiting: (() => void)[] = [];
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+function acquire(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT) {
+    inFlight++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    waiting.push(() => {
+      inFlight++;
+      resolve();
+    });
+  });
+}
+
+function release(): void {
+  inFlight--;
+  waiting.shift()?.();
 }
 
 async function gt<T>(path: string, timeoutMs = 12_000): Promise<T | null> {
   const cached = responseCache.get(path);
   // Serve a fresh-enough cached body without spending a request at all.
-  if (cached && Date.now() - cached.ts < RESPONSE_TTL_MS) return cached.data as T;
+  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data as T;
+  // Recently throttled and we already have something real to show — show it.
+  if (cached && Date.now() < cooldownUntil) return cached.data as T;
 
-  // Space requests out so bursts can't trip the rate limit.
-  const now = Date.now();
-  const wait = Math.max(0, nextSlot - now);
-  nextSlot = Math.max(now, nextSlot) + MIN_INTERVAL_MS;
-  if (wait > 0) await sleep(wait);
+  await acquire();
+  try {
+    const data = await proxiedFetchJson<T>(`${GT}${path}`, {
+      timeoutMs,
+      headers: { Accept: "application/json;version=20230302" },
+    });
 
-  const data = await proxiedFetchJson<T>(`${GT}${path}`, {
-    timeoutMs,
-    headers: { Accept: "application/json;version=20230302" },
-  });
-
-  if (data != null) {
-    responseCache.set(path, { ts: Date.now(), data });
-    return data;
+    if (data != null) {
+      responseCache.set(path, { ts: Date.now(), data });
+      return data;
+    }
+    // Failed or throttled: back off briefly, then fall back to the last good body.
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+    return (cached?.data as T) ?? null;
+  } finally {
+    release();
   }
-  // Throttled or failed → fall back to the last good body if we have one.
-  return (cached?.data as T) ?? null;
 }
 
 const n = (v: unknown) => {

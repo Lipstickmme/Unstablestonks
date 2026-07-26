@@ -166,14 +166,14 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   const targets = (tokens ?? [])
     .filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0)
     .sort((a, b) => b.vol24h - a.vol24h)
-    .slice(0, 8)
+    .slice(0, 12)
     .map((t) => t.address);
   const key = targets.join(",");
   return useQuery<Record<string, RowEnrichment>>({
     queryKey: ["row-enrichment", chainKey, key],
     enabled: targets.length > 0,
-    staleTime: 300_000,
-    refetchInterval: 300_000,
+    staleTime: 120_000,
+    refetchInterval: 120_000,
     queryFn: async () => {
       const out: Record<string, RowEnrichment> = {};
       const now = Date.now();
@@ -245,7 +245,7 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const top = (tokens ?? [])
     .filter((t) => t.indexed && t.vol24h > 0)
-    .slice(0, 4)
+    .slice(0, 8)
     .map((t) => ({ address: t.address, symbol: t.symbol }));
   const key = top.map((t) => t.address).join(",");
   return useQuery<TradeEvent[]>({
