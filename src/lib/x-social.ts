@@ -63,6 +63,8 @@ const DEFAULT_NITTER = [
 ];
 
 function heatFrom(mentions: number, impressions: number, unique: number): number {
+  // No posts means no heat — never let a zero-signal crawl score above 0.
+  if (mentions <= 0) return 0;
   // Log-scaled blend so a handful of posts still registers but virality dominates.
   // When reach is unknown (crawler sources) mentions + unique accounts carry it.
   const m = Math.log10(1 + mentions) / Math.log10(1 + 200); // ~200 posts => 1
@@ -198,61 +200,111 @@ async function viaNitter(query: string, instances: string[]): Promise<XSocialRes
   return null;
 }
 
+/** Reserved x.com path segments that are never a user handle. */
+const RESERVED_HANDLES = new Set([
+  "search",
+  "i",
+  "home",
+  "explore",
+  "intent",
+  "share",
+  "hashtag",
+  "notifications",
+  "messages",
+  "settings",
+  "compose",
+  "login",
+  "signup",
+]);
+
+/** X's snowflake epoch — post IDs carry their own creation timestamp. */
+const X_EPOCH = 1_288_834_974_657;
+
 /**
- * Last-resort free crawler: read X's own live-search page (and public search
- * engines scoped to x.com) through the reader proxy and count posts that mention
- * the contract address. No key, no rate-limited API — just mention counting,
- * which is exactly the signal we need. Reach/impressions stay 0 (unknowable
- * without the API) and the UI reports the source honestly.
+ * Decode a post's real creation time from its snowflake ID. Doubles as a
+ * validity check: any digit run that doesn't decode to a plausible date is not a
+ * post ID, so junk numbers scraped off a page can never inflate the count.
+ */
+function tsFromStatusId(id: string): number | null {
+  try {
+    const ms = Number((BigInt(id) >> 22n) + BigInt(X_EPOCH));
+    if (!isFinite(ms)) return null;
+    if (ms <= X_EPOCH || ms > Date.now() + 86_400_000) return null;
+    return ms;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Last-resort free crawler: read X's own live-search page and public search
+ * engines scoped to x.com through the reader proxy, and collect the DISTINCT
+ * posts that link to the contract address.
+ *
+ * A post only counts if we find a real `x.com/<handle>/status/<id>` link whose
+ * snowflake ID decodes to a plausible timestamp. We deliberately do NOT count
+ * literal occurrences of the address in the page text — every search page echoes
+ * the query back in its own markup (search box, title, canonical URL), which
+ * previously scored one phantom mention for every token and pinned the heat
+ * score at a constant value. No links found now means no signal, and the panel
+ * says so.
+ *
+ * All sources are read and unioned rather than short-circuiting on the first
+ * hit, so the count reflects everything reachable. Reach/impressions stay 0
+ * (unknowable without the API) and the UI reports the source honestly.
  */
 async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
   const encoded = encodeURIComponent(`"${query}"`);
   const sources = [
-    `https://x.com/search?q=${encoded}&f=live`,
     `https://duckduckgo.com/html/?q=${encoded}+site%3Ax.com`,
-    `https://search.marcia.cc/search?q=${encoded}+site%3Ax.com`,
     `https://www.bing.com/search?q=${encoded}+site%3Ax.com`,
+    `https://lite.duckduckgo.com/lite/?q=${encoded}+site%3Atwitter.com`,
+    `https://x.com/search?q=${encoded}&f=live`,
   ];
+
+  // id → post. Keyed by status id so the same post seen on two engines counts once.
+  const found = new Map<string, XPost>();
 
   for (const url of sources) {
     const text = await proxiedFetchText(url, { timeoutMs: 9_000 });
     if (!text || text.length < 200) continue;
 
-    // Collect the handles appearing alongside the CA — unique accounts talking.
-    const handles = new Set<string>();
     for (const m of text.matchAll(
-      /(?:x\.com|twitter\.com)\/([A-Za-z0-9_]{2,15})(?:\/status\/\d+)?/g,
+      /(?:x|twitter|nitter[\w.-]*)\.com\/([A-Za-z0-9_]{2,15})\/status(?:es)?\/(\d{15,25})/gi,
     )) {
-      const h = m[1].toLowerCase();
-      if (!["search", "i", "home", "explore", "intent", "share", "hashtag"].includes(h)) {
-        handles.add(m[1]);
-      }
+      const handle = m[1];
+      const id = m[2];
+      if (RESERVED_HANDLES.has(handle.toLowerCase())) continue;
+      if (found.has(id)) continue;
+      const ts = tsFromStatusId(id);
+      if (ts == null) continue;
+      found.set(id, {
+        handle: `@${handle}`,
+        text: "",
+        url: `https://x.com/${handle}/status/${id}`,
+        ts,
+        impressions: 0,
+        engagement: 0,
+      });
     }
-    // Distinct status links ≈ distinct posts mentioning the CA.
-    const statuses = new Set([...text.matchAll(/status\/(\d{8,25})/g)].map((m) => m[1]));
-    // Fall back to counting literal CA occurrences when links are stripped.
-    const literal = (text.match(new RegExp(escapeRe(query), "gi")) ?? []).length;
-    const mentions = statuses.size || Math.max(0, Math.min(literal, 200));
-    if (mentions === 0) continue;
-
-    return {
-      query,
-      posts: [],
-      mentions,
-      uniqueAccounts: handles.size,
-      impressions: 0,
-      engagement: 0,
-      heat: heatFrom(mentions, 0, handles.size),
-      source: "crawler",
-      ok: true,
-      note: "Mention count from a public crawl — reach unavailable without X_BEARER_TOKEN.",
-    };
   }
-  return null;
-}
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (found.size === 0) return null;
+
+  const posts = [...found.values()].sort((a, b) => b.ts - a.ts);
+  const unique = new Set(posts.map((p) => p.handle.toLowerCase())).size;
+  return {
+    query,
+    posts: posts.slice(0, 20),
+    mentions: posts.length,
+    uniqueAccounts: unique,
+    impressions: 0,
+    engagement: 0,
+    heat: heatFrom(posts.length, 0, unique),
+    source: "crawler",
+    ok: true,
+    note: "Posts found by public crawl — reach unavailable without X_BEARER_TOKEN.",
+  };
 }
 
 async function crawlOne(query: string): Promise<XSocialResult> {

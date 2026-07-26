@@ -123,7 +123,13 @@ export function XSocialPanel({
                   </a>
                 </span>
               </div>
-              <div className="mt-0.5 line-clamp-3 text-foreground">{p.text}</div>
+              {p.text ? (
+                <div className="mt-0.5 line-clamp-3 text-foreground">{p.text}</div>
+              ) : (
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  Post mentioning this contract — open on X to read it.
+                </div>
+              )}
             </li>
           ))}
         </ul>
