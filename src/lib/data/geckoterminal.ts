@@ -10,11 +10,44 @@ import { proxiedFetchJson } from "../net";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 
+// ── Rate limiting + last-good cache ──────────────────────────────────────────
+// The free tier allows ~30 calls/min. Exceeding it returns 429s, which used to
+// surface as EMPTY data and wiped good rows off the terminal. Two guards:
+//   1. A token bucket that spaces requests so we stay under the limit.
+//   2. A per-path cache that serves the last SUCCESSFUL response whenever a
+//      request fails or is throttled — stale real data always beats no data.
+const MIN_INTERVAL_MS = 2_100; // ~28 requests/minute
+const RESPONSE_TTL_MS = 90_000;
+
+let nextSlot = 0;
+const responseCache = new Map<string, { ts: number; data: unknown }>();
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function gt<T>(path: string, timeoutMs = 12_000): Promise<T | null> {
-  return proxiedFetchJson<T>(`${GT}${path}`, {
+  const cached = responseCache.get(path);
+  // Serve a fresh-enough cached body without spending a request at all.
+  if (cached && Date.now() - cached.ts < RESPONSE_TTL_MS) return cached.data as T;
+
+  // Space requests out so bursts can't trip the rate limit.
+  const now = Date.now();
+  const wait = Math.max(0, nextSlot - now);
+  nextSlot = Math.max(now, nextSlot) + MIN_INTERVAL_MS;
+  if (wait > 0) await sleep(wait);
+
+  const data = await proxiedFetchJson<T>(`${GT}${path}`, {
     timeoutMs,
     headers: { Accept: "application/json;version=20230302" },
   });
+
+  if (data != null) {
+    responseCache.set(path, { ts: Date.now(), data });
+    return data;
+  }
+  // Throttled or failed → fall back to the last good body if we have one.
+  return (cached?.data as T) ?? null;
 }
 
 const n = (v: unknown) => {

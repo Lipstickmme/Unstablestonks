@@ -27,6 +27,10 @@ import { readCache, writeCache } from "../persist";
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
 const REFRESH = 30_000;
 
+/** DYOR's public JSON API is unconfirmed — opt in explicitly. */
+const DYOR_ENABLED =
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DYOR_API === "1";
+
 export function useChainStats() {
   const { chain, chainKey } = useChain();
   return useQuery<ChainStats>({
@@ -77,18 +81,19 @@ export function useTokens() {
     initialData: () => readCache<TokenRow[]>(cacheKey),
     initialDataUpdatedAt: 0,
     queryFn: async () => {
-      // All three sources run in parallel and are UNIONED — a slow or failing
-      // source can only ever contribute less, never remove rows others found.
-      const [gtRows, bsRows, dyor] = await Promise.all([
+      // GeckoTerminal pools + the explorer registry are the sources that
+      // actually carry market data. They are UNIONED, so a slow or failing
+      // source can only ever contribute fewer rows, never remove rows the other
+      // one found. DYOR is deliberately NOT a list source: its feed is dominated
+      // by brand-new micro-cap launches and pulling it in here buried the real
+      // top tokens. It stays an opt-in enrichment (see useDyorTokens).
+      const [gtRows, bsRows] = await Promise.all([
         fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
-        fetchDyorTokens(chain).catch(() => ({}) as Record<string, DyorTokenInfo>),
       ]);
 
       const merged = new Map<string, TokenRow>();
-      // 1. DEX pools lead — they carry live market structure.
       for (const t of gtRows) merged.set(t.address, t);
-      // 2. Explorer registry fills gaps and appends registry-only tokens.
       for (const bs of bsRows) {
         const cur = merged.get(bs.address);
         if (cur) {
@@ -101,63 +106,17 @@ export function useTokens() {
           merged.set(bs.address, bs);
         }
       }
-      // 3. Launchpad tokens the other two haven't indexed yet still show up.
-      for (const [addr, d] of Object.entries(dyor)) {
-        const cur = merged.get(addr);
-        if (cur) {
-          if (d.holders && !cur.holders) cur.holders = d.holders;
-          if (d.logoUrl && !cur.logoUrl) cur.logoUrl = d.logoUrl;
-          if (d.createdAtMs && cur.ageMinutes < 0) {
-            cur.ageMinutes = Math.max(0, (Date.now() - d.createdAtMs) / 60_000);
-          }
-        } else {
-          merged.set(addr, dyorToRow(addr, d));
-        }
-      }
 
       const rows = [...merged.values()].sort((a, b) => b.vol24h - a.vol24h);
-      if (rows.length) writeCache(cacheKey, rows);
-      return rows;
+      if (rows.length) {
+        writeCache(cacheKey, rows);
+        return rows;
+      }
+      // Everything upstream failed — keep showing the last good list instead of
+      // blanking the terminal.
+      return readCache<TokenRow[]>(cacheKey, 60 * 60_000) ?? [];
     },
   });
-}
-
-/** A launchpad token the DEX indexer and explorer haven't picked up yet. */
-function dyorToRow(address: string, d: DyorTokenInfo): TokenRow {
-  const symbol = d.symbol ?? "?";
-  return {
-    address,
-    name: d.name ?? symbol,
-    symbol,
-    logo: symbol.slice(0, 2).toUpperCase(),
-    logoUrl: d.logoUrl,
-    ageMinutes: d.createdAtMs ? Math.max(0, (Date.now() - d.createdAtMs) / 60_000) : -1,
-    price: 0,
-    priceChange1h: 0,
-    priceChange24h: 0,
-    mcap: 0,
-    fdv: 0,
-    vol5m: 0,
-    vol1h: 0,
-    vol6h: 0,
-    vol24h: 0,
-    buys24h: 0,
-    sells24h: 0,
-    liquidityEth: 0,
-    graduationPct: 0,
-    holders: d.holders ?? 0,
-    topHolderPct: 0,
-    deployer: "",
-    status: d.createdAtMs && Date.now() - d.createdAtMs < 3_600_000 ? ["new"] : [],
-    socialHeat: 0,
-    lockedLiquidity: false,
-    feeSplit: "70/30",
-    socials: {},
-    lastTradeMs: Date.now(),
-    priceSource: "none",
-    indexed: false,
-    launchpadName: "DYOR Fun",
-  };
 }
 
 /**
@@ -204,14 +163,14 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   const targets = (tokens ?? [])
     .filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0)
     .sort((a, b) => b.vol24h - a.vol24h)
-    .slice(0, 12)
+    .slice(0, 8)
     .map((t) => t.address);
   const key = targets.join(",");
   return useQuery<Record<string, RowEnrichment>>({
     queryKey: ["row-enrichment", chainKey, key],
     enabled: targets.length > 0,
-    staleTime: 120_000,
-    refetchInterval: 120_000,
+    staleTime: 300_000,
+    refetchInterval: 300_000,
     queryFn: async () => {
       const out: Record<string, RowEnrichment> = {};
       const now = Date.now();
@@ -264,8 +223,12 @@ export function useDyorTokens() {
   const { chain, chainKey } = useChain();
   return useQuery<Record<string, DyorTokenInfo>>({
     queryKey: ["dyor-tokens", chainKey],
-    staleTime: 60_000,
-    refetchInterval: 90_000,
+    // The DYOR site renders via React Server Components — there is no confirmed
+    // public JSON endpoint — so this stays OFF by default and never blocks or
+    // degrades the main list. Enable with VITE_DYOR_API=1 once a real route is known.
+    enabled: DYOR_ENABLED && Boolean(chain.dyorSlug),
+    staleTime: 300_000,
+    refetchInterval: false,
     retry: 0,
     queryFn: () => fetchDyorTokens(chain),
   });
@@ -279,7 +242,7 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const top = (tokens ?? [])
     .filter((t) => t.indexed && t.vol24h > 0)
-    .slice(0, 8)
+    .slice(0, 4)
     .map((t) => ({ address: t.address, symbol: t.symbol }));
   const key = top.map((t) => t.address).join(",");
   return useQuery<TradeEvent[]>({

@@ -40,6 +40,8 @@ export interface ExplorerStats {
   tokensTotal?: number;
   contractsTotal?: number;
   gasUsed24h?: number;
+  /** Key-authenticated block height from Etherscan V2, when a key is set. */
+  blockNumber?: number;
   ok: boolean;
 }
 
@@ -79,6 +81,39 @@ interface BlockscoutStats {
   total_transactions?: string;
   total_addresses?: string;
   transactions_today?: string;
+}
+
+/**
+ * Etherscan V2 — one key, every supported chain via ?chainid=. Used server-side
+ * with STABLESCAN_API_KEY. It doesn't publish a "total addresses" counter, but it
+ * does give an authoritative, key-authenticated block height and gas price, and
+ * it raises our rate limits on the Etherscan-family explorers.
+ */
+async function viaEtherscanV2(chainId: number): Promise<Partial<ExplorerStats>> {
+  const key = apiKey();
+  if (!key) return {};
+  const base = `https://api.etherscan.io/v2/api?chainid=${chainId}&apikey=${key}`;
+
+  const [blockRes, countRes] = await Promise.all([
+    proxiedFetchJson<{ result?: string }>(`${base}&module=proxy&action=eth_blockNumber`, {
+      timeoutMs: 8_000,
+    }),
+    // Total transaction count is exposed per-chain on the stats module where the
+    // chain supports it; absent → we simply don't set the field.
+    proxiedFetchJson<{ status?: string; result?: string }>(
+      `${base}&module=stats&action=nodecount`,
+      { timeoutMs: 8_000 },
+    ),
+  ]);
+
+  const out: Partial<ExplorerStats> = {};
+  const hex = blockRes?.result;
+  if (typeof hex === "string" && hex.startsWith("0x")) {
+    const n = parseInt(hex, 16);
+    if (isFinite(n) && n > 0) out.blockNumber = n;
+  }
+  void countRes;
+  return out;
 }
 
 /**
@@ -134,6 +169,9 @@ async function scrapeStableScan(): Promise<ExplorerStats> {
   return { ok: false };
 }
 
+/** Chain ids for the Etherscan V2 multichain API. */
+const CHAIN_IDS: Record<string, number> = { stable: 988, robinhood: 4663, arc: 5042002 };
+
 /** Known Blockscout hosts per chain, tried before any page scraping. */
 const BLOCKSCOUT_HOSTS: Record<string, string[]> = {
   stable: ["https://blockscout.stable.xyz", "https://explorer.stable.xyz"],
@@ -162,6 +200,16 @@ export const fetchExplorerStats = createServerFn({ method: "GET" })
 
     let stats = await viaBlockscout(BLOCKSCOUT_HOSTS[chain] ?? []);
     if (!stats.ok && chain === "stable") stats = await scrapeStableScan();
+
+    // Etherscan V2 (STABLESCAN_API_KEY) adds a key-authenticated block height
+    // and higher rate limits on Etherscan-family explorers.
+    const chainId = CHAIN_IDS[chain];
+    if (chainId) {
+      const es = await viaEtherscanV2(chainId).catch(() => ({}) as Partial<ExplorerStats>);
+      if (es.blockNumber) {
+        stats = { ...stats, blockNumber: es.blockNumber, ok: stats.ok || true };
+      }
+    }
 
     if (stats.ok) cache.set(chain, { ts: Date.now(), data: stats });
     return stats;

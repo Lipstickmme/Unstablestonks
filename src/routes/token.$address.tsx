@@ -7,6 +7,7 @@ import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
 import { BundleWatch } from "@/components/terminal/BundleWatch";
+import { BridgePanel } from "@/components/terminal/BridgePanel";
 import { TokenIcon } from "@/components/terminal/TokenIcon";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import { useTokenDetail, useTokens, useTokenCandles, type ChartTimeframe } from "@/lib/data/hooks";
@@ -97,14 +98,14 @@ function TokenDetail() {
                             ? "explorer-priced"
                             : "unpriced"}
                       </span>
-                      {token.launchpadName && (
+                      {token.launchpadName ? (
                         <span className="chip border-grad/40 bg-grad/10 !py-0 text-[9px] text-grad">
                           <Rocket className="h-2.5 w-2.5" /> {token.launchpadName}
-                          {token.graduated ? " · graduated" : " · on curve"}
                         </span>
-                      )}
-                      {!token.launchpadName && token.dexName && (
-                        <span className="chip !py-0 text-[9px]">{token.dexName}</span>
+                      ) : (
+                        token.dexName && (
+                          <span className="chip !py-0 text-[9px]">{token.dexName}</span>
+                        )
                       )}
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -279,6 +280,7 @@ function TokenDetail() {
                   symbol={token.symbol}
                   shareOfVoice={shareOfVoice}
                 />
+                <BridgePanel />
                 <BundleWatch trades={data.trades} />
                 <WhaleWatch trades={data.trades} />
                 <LiveTrades trades={data.trades} />
