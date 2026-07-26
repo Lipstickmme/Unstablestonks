@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Search, Star, Repeat } from "lucide-react";
+import { Search, Star } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { useWatchlist } from "@/lib/watchlist";
 import { ChainSwitcher } from "./ChainSwitcher";
 import { WalletButton } from "./WalletButton";
 import { BridgeModal } from "./BridgeModal";
+import { BridgeIcon } from "@/components/brand/BridgeIcon";
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -96,7 +97,7 @@ export function Header() {
             aria-label="Bridge funds in"
             className="grid h-8 w-8 place-items-center rounded-full border border-border bg-surface text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
           >
-            <Repeat className="h-3.5 w-3.5" />
+            <BridgeIcon className="h-4 w-4" />
           </button>
           <ChainSwitcher />
           <WalletButton />
