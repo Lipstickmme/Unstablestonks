@@ -91,4 +91,6 @@ export interface ChainStats {
   updatedAt: Date;
   /** True when at least one figure came off a live source. */
   live: boolean;
+  /** Which explorer hops produced the totals — for diagnosing an empty chain. */
+  statSources?: string[];
 }

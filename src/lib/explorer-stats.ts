@@ -10,30 +10,39 @@ import { proxiedFetchJson, proxiedFetchText } from "./net";
 //   1. Blockscout `/api/v2/stats` — structured and exact. Only exists for chains
 //      whose explorer is Blockscout (Robinhood, Arc).
 //
-//   2. The Etherscan-family explorer's own server-rendered pages. Stable's
-//      explorer is StableScan (Etherscan-powered), and per the Etherscan API
-//      docs (https://docs.etherscan.io/introduction) there is NO free endpoint
-//      for "total transactions"/"total addresses" — those figures live only in
-//      the UI. Etherscan renders them as fixed, machine-readable strings:
+//   2. The Etherscan-family explorer's chart CSV exports. Every Etherscan
+//      deployment — StableScan included — serves each chart as CSV:
+//        /chart/tx?output=csv                 daily transaction counts
+//        /chart/address?output=csv            cumulative unique addresses
+//        /chart/verified-contracts?output=csv cumulative verified contracts
+//      Rows are `"Date(UTC)","UnixTimeStamp","Value"`. Summing the tx series
+//      gives total transactions; its last row is the last full day; the address
+//      series is cumulative so its last row IS the total address count. This is
+//      the most reliable source for Stable: small, static, text/csv, and not
+//      gated behind the client-rendered parts of the UI.
+//
+//   3. The explorer's server-rendered pages, as a backstop when the CSVs are
+//      unavailable. Etherscan states these totals in fixed strings:
 //        /txs                → "More than 12,345,678 transactions found"
 //        /accounts           → "A total of 97,059 accounts found"
 //        /tokens             → "A total of 412 token contracts found"
 //        /contractsVerified  → "A total of 88 verified contracts found"
-//        /charts             → the Overview grid (24h counters, totals)
-//      We read those pages server-side (CORS-free, key stays secret) and parse
-//      the labelled figures. This is the fetch that populated Stable before.
+//        /charts             → the #section-overview-stats grid
 //
-//   3. The Etherscan-compatible JSON API for a key-authenticated block height:
-//      StableScan's own host first (`https://stablescan.xyz/api`, the white-label
-//      deployment the key belongs to), then Etherscan V2 multichain
-//      (`api.etherscan.io/v2/api?chainid=…`) for chains it actually covers.
-//      Note: V2 only serves chains on Etherscan's supported list — it does not
-//      cover Stable — which is why the key alone changed nothing before.
+//   4. The Etherscan V2 multichain API for a key-authenticated block height and
+//      gas price. Stable IS on Etherscan V2 (`api.etherscan.io/v2/api?chainid=988`
+//      — StableScan is an Etherscan-built explorer), so a STABLESCAN_API_KEY is
+//      valid there. What V2 does NOT have, on any chain, is a free "total
+//      transactions"/"total addresses" endpoint — those exist only as chart data,
+//      which is why adding the key alone changed nothing.
 //
 // The API key is read from env ONLY and used ONLY on the server, so it never
 // reaches the client bundle. Supported names (first match wins):
 //   STABLESCAN_API_KEY · ETHERSCAN_API_KEY · EXPLORER_API_KEY
-// No key is required for the totals above — it only unlocks the JSON API hop.
+// No key is required for sources 1-3 — it only authenticates source 4.
+//
+// `sources` on the result records which hops actually produced data, so a live
+// deployment can be diagnosed from the network tab without guesswork.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function serverEnv(key: string): string | undefined {
@@ -63,6 +72,9 @@ export interface ExplorerStats {
   contractsTotal?: number;
   /** Key-authenticated block height from the Etherscan-compatible API. */
   blockNumber?: number;
+  gasPriceGwei?: number;
+  /** Which hops produced data, e.g. ["csv:tx", "csv:address", "api:v2"]. */
+  sources?: string[];
   ok: boolean;
 }
 
@@ -74,7 +86,8 @@ type NumericStat =
   | "transactions24h"
   | "tokensTotal"
   | "contractsTotal"
-  | "blockNumber";
+  | "blockNumber"
+  | "gasPriceGwei";
 
 const NUMERIC_KEYS: NumericStat[] = [
   "totalAddresses",
@@ -84,6 +97,7 @@ const NUMERIC_KEYS: NumericStat[] = [
   "tokensTotal",
   "contractsTotal",
   "blockNumber",
+  "gasPriceGwei",
 ];
 
 /** Fill only the fields `base` is missing — a later source never overwrites. */
@@ -92,6 +106,7 @@ function merge(base: ExplorerStats, extra: Partial<ExplorerStats>): ExplorerStat
   for (const k of NUMERIC_KEYS) {
     if (out[k] == null && extra[k] != null) out[k] = extra[k];
   }
+  if (extra.sources?.length) out.sources = [...(out.sources ?? []), ...extra.sources];
   return out;
 }
 
@@ -171,6 +186,95 @@ async function viaBlockscout(hosts: string[]): Promise<ExplorerStats> {
   return { ok: false };
 }
 
+interface SeriesPoint {
+  ts: number;
+  value: number;
+}
+
+/**
+ * Parse an Etherscan chart CSV export.
+ * Header: "Date(UTC)","UnixTimeStamp","Value" — the header row can't match
+ * because its second column isn't numeric.
+ */
+function parseChartCsv(csv: string): SeriesPoint[] {
+  const rows: SeriesPoint[] = [];
+  for (const line of csv.split(/\r?\n/)) {
+    const m = line.match(/^\s*"?[^",]*"?\s*,\s*"?(\d{9,12})"?\s*,\s*"?([\d,]+(?:\.\d+)?)"?/);
+    if (!m) continue;
+    const ts = parseInt(m[1], 10);
+    const value = parseFloat(m[2].replace(/,/g, ""));
+    if (!isFinite(ts) || !isFinite(value)) continue;
+    rows.push({ ts, value });
+  }
+  return rows.sort((a, b) => a.ts - b.ts);
+}
+
+/** A non-decreasing series is cumulative (its last point is the total). */
+function isCumulative(rows: SeriesPoint[]): boolean {
+  for (let i = 1; i < rows.length; i++) if (rows[i].value < rows[i - 1].value) return false;
+  return true;
+}
+
+async function fetchChart(host: string, name: string): Promise<SeriesPoint[]> {
+  const csv = await proxiedFetchText(`${host}/chart/${name}?output=csv`, {
+    timeoutMs: 12_000,
+    headers: { Accept: "text/csv,text/plain,*/*" },
+  });
+  if (!csv || csv.length < 40) return [];
+  return parseChartCsv(csv);
+}
+
+/**
+ * Read the network totals from the explorer's chart CSV exports. This is the
+ * data behind stablescan.xyz/charts#section-overview-stats, served as plain
+ * text instead of markup — no parsing of a rendered page, no key required.
+ */
+async function viaChartCsv(host: string): Promise<Partial<ExplorerStats>> {
+  const [tx, addr, verified] = await Promise.all([
+    fetchChart(host, "tx"),
+    fetchChart(host, "address"),
+    fetchChart(host, "verified-contracts"),
+  ]);
+
+  const out: Partial<ExplorerStats> = {};
+  const sources: string[] = [];
+
+  if (tx.length) {
+    // Daily counts: the running total is their sum, "24h" is the last full day.
+    const total = isCumulative(tx) ? tx[tx.length - 1].value : tx.reduce((s, r) => s + r.value, 0);
+    if (total > 0) out.totalTransactions = Math.round(total);
+    const last = tx[tx.length - 1].value;
+    if (last > 0) out.transactions24h = Math.round(last);
+    sources.push("csv:tx");
+  }
+
+  if (addr.length) {
+    // Unique-address charts are cumulative, so the last point is the total.
+    const total = isCumulative(addr)
+      ? addr[addr.length - 1].value
+      : addr.reduce((s, r) => s + r.value, 0);
+    if (total > 0) out.totalAddresses = Math.round(total);
+    if (addr.length > 1 && isCumulative(addr)) {
+      const delta = addr[addr.length - 1].value - addr[addr.length - 2].value;
+      if (delta > 0) out.newAddresses24h = Math.round(delta);
+    } else if (addr.length) {
+      out.newAddresses24h = Math.round(addr[addr.length - 1].value) || undefined;
+    }
+    sources.push("csv:address");
+  }
+
+  if (verified.length) {
+    const total = isCumulative(verified)
+      ? verified[verified.length - 1].value
+      : verified.reduce((s, r) => s + r.value, 0);
+    if (total > 0) out.contractsTotal = Math.round(total);
+    sources.push("csv:verified-contracts");
+  }
+
+  if (sources.length) out.sources = sources;
+  return out;
+}
+
 /**
  * Etherscan list pages state their totals in a fixed sentence directly above the
  * table. These strings are stable across every Etherscan deployment, StableScan
@@ -235,19 +339,27 @@ async function scrapeEtherscanFamily(host: string): Promise<ExplorerStats> {
     });
     if (!raw || raw.length < 200) continue;
     const text = plain(raw);
+    let hit = false;
 
     for (const c of COUNTERS) {
       if (out[c.key] != null) continue;
       const m = text.match(c.re);
       if (!m) continue;
       const v = toNumber(m[1].trim());
-      if (isFinite(v) && v >= c.floor) out[c.key] = v;
+      if (isFinite(v) && v >= c.floor) {
+        out[c.key] = v;
+        hit = true;
+      }
     }
     for (const g of GRID) {
       if (out[g.key] != null) continue;
       const v = statValue(text, g.re, g.floor);
-      if (v != null) out[g.key] = v;
+      if (v != null) {
+        out[g.key] = v;
+        hit = true;
+      }
     }
+    if (hit) out.sources = [...(out.sources ?? []), `html:${url.replace(host, "") || "/"}`];
   }
 
   out.ok = Boolean(out.totalTransactions || out.totalAddresses || out.transactions24h);
@@ -272,31 +384,55 @@ const SCAN_HOSTS: Record<string, string[]> = {
 };
 
 /**
- * Etherscan-compatible JSON API hosts. The white-label deployment comes first —
- * that's the host a StableScan key is actually valid on. Etherscan V2 is
- * appended only as a fallback; it serves the chains on Etherscan's supported
- * list, which is why pointing chainid=988 at it returned nothing usable.
+ * Etherscan-compatible JSON API hosts. Etherscan V2 multichain comes first when
+ * a key is set — Stable (988) is one of the chains it serves, and that's the
+ * host a STABLESCAN_API_KEY authenticates against. The white-label host is kept
+ * as a key-less fallback for deployments V2 hasn't picked up.
  */
-const ETHERSCAN_API_HOSTS: Record<string, string[]> = {
-  stable: ["https://api.stablescan.xyz/api", "https://stablescan.xyz/api"],
-  robinhood: [],
-  arc: [],
-};
+function etherscanApiBases(chain: string): string[] {
+  const key = apiKey();
+  const id = CHAIN_IDS[chain];
+  const bases: string[] = [];
+  if (key && id) bases.push(`https://api.etherscan.io/v2/api?chainid=${id}`);
+  if (chain === "stable")
+    bases.push("https://api.stablescan.xyz/api", "https://stablescan.xyz/api");
+  return bases;
+}
 
+interface RpcResult {
+  result?: string;
+}
+
+/** Block height + gas price from the Etherscan-compatible JSON API. */
 async function viaEtherscanApi(chain: string): Promise<Partial<ExplorerStats>> {
   const key = apiKey();
-  const bases = [...(ETHERSCAN_API_HOSTS[chain] ?? [])];
-  const id = CHAIN_IDS[chain];
-  if (key && id) bases.push(`https://api.etherscan.io/v2/api?chainid=${id}`);
+  const suffix = key ? `&apikey=${key}` : "";
 
-  for (const base of bases) {
+  for (const base of etherscanApiBases(chain)) {
     const sep = base.includes("?") ? "&" : "?";
-    const url = `${base}${sep}module=proxy&action=eth_blockNumber${key ? `&apikey=${key}` : ""}`;
-    const res = await proxiedFetchJson<{ result?: string }>(url, { timeoutMs: 8_000 });
-    const hex = res?.result;
+    const [blockRes, gasRes] = await Promise.all([
+      proxiedFetchJson<RpcResult>(`${base}${sep}module=proxy&action=eth_blockNumber${suffix}`, {
+        timeoutMs: 8_000,
+      }),
+      proxiedFetchJson<RpcResult>(`${base}${sep}module=proxy&action=eth_gasPrice${suffix}`, {
+        timeoutMs: 8_000,
+      }),
+    ]);
+
+    const out: Partial<ExplorerStats> = {};
+    const hex = blockRes?.result;
     if (typeof hex === "string" && hex.startsWith("0x")) {
       const n = parseInt(hex, 16);
-      if (isFinite(n) && n > 0) return { blockNumber: n };
+      if (isFinite(n) && n > 0) out.blockNumber = n;
+    }
+    const gasHex = gasRes?.result;
+    if (typeof gasHex === "string" && gasHex.startsWith("0x")) {
+      const wei = parseInt(gasHex, 16);
+      if (isFinite(wei) && wei > 0) out.gasPriceGwei = wei / 1e9;
+    }
+    if (out.blockNumber || out.gasPriceGwei) {
+      out.sources = [`api:${base.includes("etherscan.io") ? "etherscan-v2" : "white-label"}`];
+      return out;
     }
   }
   return {};
@@ -309,10 +445,11 @@ const TTL_OK = 120_000;
 const TTL_FAIL = 20_000;
 
 /**
- * Network totals for a chain. Sources are merged rather than raced: Blockscout
- * fills what it has, the Etherscan-family explorer fills the rest, and the JSON
- * API adds a key-authenticated block height. Returns ok:false rather than
- * guessing.
+ * Network totals for a chain. Sources are merged rather than raced, cheapest and
+ * most reliable first: Blockscout /stats, then the explorer's chart CSVs, then
+ * its rendered pages, then the JSON API for block height and gas. Every hop only
+ * fills fields still missing, so one failure can never blank a figure another
+ * source already found. Returns ok:false rather than guessing.
  */
 export const fetchExplorerStats = createServerFn({ method: "GET" })
   .validator((raw: unknown): { chain: string } => {
@@ -325,9 +462,16 @@ export const fetchExplorerStats = createServerFn({ method: "GET" })
     if (hit && Date.now() - hit.ts < (hit.data.ok ? TTL_OK : TTL_FAIL)) return hit.data;
 
     let stats = await viaBlockscout(BLOCKSCOUT_HOSTS[chain] ?? []);
+    if (stats.ok) stats.sources = ["blockscout"];
+
+    const complete = (s: ExplorerStats) => Boolean(s.totalTransactions && s.totalAddresses);
 
     for (const host of SCAN_HOSTS[chain] ?? []) {
-      if (stats.totalTransactions && stats.totalAddresses) break;
+      if (complete(stats)) break;
+      // CSV exports first — plain text, no rendered markup to parse.
+      const csv = await viaChartCsv(host).catch(() => ({}) as Partial<ExplorerStats>);
+      stats = merge(stats, csv);
+      if (complete(stats)) break;
       const scraped = await scrapeEtherscanFamily(host).catch(
         () => ({ ok: false }) as ExplorerStats,
       );

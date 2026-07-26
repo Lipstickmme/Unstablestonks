@@ -53,10 +53,13 @@ export function useChainStats() {
         newAddresses24h: scan?.newAddresses24h,
         tokensTotal: scan?.tokensTotal,
         contractsTotal: scan?.contractsTotal,
-        gasPriceGwei: health.ok ? health.gasPriceGwei : explorer.gasPriceGwei,
-        blockNumber: health.ok ? health.blockNumber : undefined,
+        gasPriceGwei: health.ok
+          ? health.gasPriceGwei
+          : (explorer.gasPriceGwei ?? scan?.gasPriceGwei),
+        blockNumber: health.ok ? health.blockNumber : scan?.blockNumber,
         updatedAt: new Date(),
         live: Boolean(explorer.live) || health.ok || Boolean(scan?.ok),
+        statSources: scan?.sources,
       };
     },
   });

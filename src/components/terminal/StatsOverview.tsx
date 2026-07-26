@@ -56,7 +56,14 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
             Live on-chain reporting for {chain.name}.{" "}
             <span className="text-muted-foreground/70">{chain.tagline}</span>
           </p>
-          <p className="mt-2 font-mono text-[11px] text-muted-foreground/80">
+          <p
+            className="mt-2 font-mono text-[11px] text-muted-foreground/80"
+            title={
+              stats?.statSources?.length
+                ? `Totals from: ${stats.statSources.join(", ")}`
+                : "Explorer totals unavailable — no source responded."
+            }
+          >
             <span
               className={`mr-2 inline-block align-middle ${stats?.live ? "live-dot" : "opacity-40"}`}
             />

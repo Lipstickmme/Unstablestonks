@@ -11,11 +11,28 @@
 
 type ProxyBuilder = (url: string) => string;
 
+// All key-less. proxy.cors.sh is deliberately absent: it requires an
+// `x-cors-api-key` header and 403s without one, so it only ever burned a hop.
 const PROXIES: ProxyBuilder[] = [
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   (u) => `https://api.cors.lol/?url=${encodeURIComponent(u)}`,
-  (u) => `https://proxy.cors.sh/${u}`,
   (u) => `https://r.jina.ai/${u}`,
 ];
+
+const IS_SERVER = typeof window === "undefined";
+
+// Explorers behind Cloudflare (StableScan among them) reject requests that
+// carry a runtime's default fetch User-Agent. Browsers forbid setting these
+// headers — the call would be a silent no-op — so we only add them on the
+// server, where they're what makes the direct hop succeed at all.
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/124.0.0.0 Safari/537.36",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 
 async function fetchWithTimeout(
   url: string,
@@ -25,7 +42,11 @@ async function fetchWithTimeout(
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: ctrl.signal, headers });
+    return await fetch(url, {
+      signal: ctrl.signal,
+      headers: IS_SERVER ? { ...BROWSER_HEADERS, ...headers } : headers,
+      redirect: "follow",
+    });
   } catch {
     return null;
   } finally {
