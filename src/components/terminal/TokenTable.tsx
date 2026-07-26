@@ -31,14 +31,12 @@ type SortKey =
   | "socialHeat"
   | "priceChange24h"
   | "holders";
-type Filter = "all" | "new" | "trending" | "graduating" | "graduated";
+type Filter = "all" | "new" | "trending";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   { key: "all", label: "All launches" },
   { key: "new", label: "New", icon: <Sparkles className="h-3 w-3" /> },
   { key: "trending", label: "Trending", icon: <Flame className="h-3 w-3" /> },
-  { key: "graduating", label: "On curve", icon: <Rocket className="h-3 w-3" /> },
-  { key: "graduated", label: "Graduated" },
 ];
 
 function StatusBadge({ s }: { s: TokenStatus }) {
@@ -111,39 +109,20 @@ function Sparkline({ points, positive }: { points?: number[]; positive: boolean 
   );
 }
 
-/** Venue cell: launchpad + real curve progress / graduation, or the DEX venue. */
+/**
+ * Venue cell — which DEX/launchpad the token trades on. Bonding-curve progress
+ * and graduation are intentionally NOT shown: they can't be tracked reliably
+ * across all three chains, and a wrong label is worse than none.
+ */
 function VenueCell({ t }: { t: TokenRow }) {
-  if (t.launchpadName) {
-    const pct = Math.max(0, Math.min(100, t.graduationPct));
-    return (
-      <div className="flex min-w-[7.5rem] flex-col gap-0.5">
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium">
-          <Rocket className="h-3 w-3 text-grad" />
-          {t.launchpadName}
-        </span>
-        {t.graduated ? (
-          <span className="text-[10px] text-bull">✓ graduated → {t.dexName ?? "DEX"}</span>
-        ) : (
-          <>
-            <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
-              <div
-                className="h-full bg-grad transition-all duration-700"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <span className="num text-[10px] text-muted-foreground">
-              {pct.toFixed(0)}% of {t.curveTarget ? formatUSD(t.curveTarget) : "curve"}
-              {t.curveEstimated ? " (est.)" : ""}
-            </span>
-          </>
-        )}
-      </div>
-    );
-  }
-  if (t.dexName) {
-    return <span className="text-[11px] text-muted-foreground">{t.dexName}</span>;
-  }
-  return <span className="text-[11px] text-muted-foreground">—</span>;
+  const venue = t.launchpadName ?? t.dexName;
+  if (!venue) return <span className="text-[11px] text-muted-foreground">—</span>;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+      {t.launchpadName && <Rocket className="h-3 w-3 text-grad" />}
+      {venue}
+    </span>
+  );
 }
 
 /** Per-row bundle read — same analysis as the panel, condensed to one cell. */

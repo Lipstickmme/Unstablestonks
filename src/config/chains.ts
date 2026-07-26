@@ -70,6 +70,8 @@ export interface ChainConfig {
   router?: RouterConfig;
   /** GeckoTerminal network slug, if the chain is indexed there. */
   geckoterminalNetwork?: string;
+  /** DYOR Fun V3 API path segment — the API is namespaced /api/<slug>/... */
+  dyorSlug?: string;
   /** Per-chain accent (oklch) so the UI reskins on switch. */
   accent: string;
   tagline: string;
@@ -135,6 +137,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     },
     // Robinhood Chain is indexed by GeckoTerminal — unlocks DEX prices/vol/trades.
     geckoterminalNetwork: "robinhood",
+    dyorSlug: "robinhood",
     accent: "oklch(0.87 0.19 128)", // Robinhood lime/green
     tagline: "Arbitrum Orbit L2 · tokenized-stock rails · ~100ms blocks",
   },
@@ -187,6 +190,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // works for Robinhood; if Stable is indexed there, the table fills with live
     // pool data. Harmless empty otherwise. Override via env if the slug differs.
     geckoterminalNetwork: env("VITE_GT_NETWORK_STABLE") ?? "stable",
+    dyorSlug: "stable",
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
     tagline: "Tether L1 · USDT-native gas · sub-second finality",
   },
@@ -216,6 +220,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
       quoter: "0x7dfd4f31be6814d2906bde155c3e1b146eac1468",
       feeTier: 3000,
     },
+    dyorSlug: "arc",
     accent: "oklch(0.72 0.16 250)", // Circle blue
     tagline: "Circle L1 · USDC-native gas · testnet",
   },

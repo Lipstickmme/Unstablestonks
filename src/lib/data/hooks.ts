@@ -19,14 +19,9 @@ import {
   type Candle,
 } from "./geckoterminal";
 import { getErc20Meta, getRpcHealth } from "./rpc";
-import {
-  fetchDyorToken,
-  fetchDyorTokens,
-  estimateCurveProgress,
-  DYOR_CURVE_TARGET_V3,
-  type DyorTokenInfo,
-} from "./dyor";
+import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
 import { fetchExplorerStats } from "../explorer-stats";
+import { readCache, writeCache } from "../persist";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
@@ -74,34 +69,95 @@ export function useChainStats() {
  */
 export function useTokens() {
   const { chain, chainKey } = useChain();
+  const cacheKey = `tokens.${chainKey}`;
   return useQuery<TokenRow[]>({
     queryKey: ["tokens", chainKey],
     refetchInterval: REFRESH,
+    // Paint immediately from the last good list, then refresh in the background.
+    initialData: () => readCache<TokenRow[]>(cacheKey),
+    initialDataUpdatedAt: 0,
     queryFn: async () => {
-      const [gtRows, bsRows] = await Promise.all([
-        fetchNetworkPools(chain).catch(() => []),
-        fetchTokens(chain).catch(() => []),
+      // All three sources run in parallel and are UNIONED — a slow or failing
+      // source can only ever contribute less, never remove rows others found.
+      const [gtRows, bsRows, dyor] = await Promise.all([
+        fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
+        fetchTokens(chain).catch(() => [] as TokenRow[]),
+        fetchDyorTokens(chain).catch(() => ({}) as Record<string, DyorTokenInfo>),
       ]);
 
-      if (gtRows.length === 0) return bsRows;
-
-      const byAddr = new Map(gtRows.map((t) => [t.address, t]));
-      const rest: TokenRow[] = [];
+      const merged = new Map<string, TokenRow>();
+      // 1. DEX pools lead — they carry live market structure.
+      for (const t of gtRows) merged.set(t.address, t);
+      // 2. Explorer registry fills gaps and appends registry-only tokens.
       for (const bs of bsRows) {
-        const gt = byAddr.get(bs.address);
-        if (gt) {
-          // Enrich the DEX row with registry facts the pools API lacks.
-          gt.holders = bs.holders || gt.holders;
-          gt.logoUrl = gt.logoUrl ?? bs.logoUrl;
-          gt.totalSupply = gt.totalSupply ?? bs.totalSupply;
-          gt.mcap = gt.mcap || bs.mcap;
+        const cur = merged.get(bs.address);
+        if (cur) {
+          cur.holders = cur.holders || bs.holders;
+          cur.logoUrl = cur.logoUrl ?? bs.logoUrl;
+          cur.totalSupply = cur.totalSupply ?? bs.totalSupply;
+          cur.mcap = cur.mcap || bs.mcap;
+          cur.vol24h = cur.vol24h || bs.vol24h;
         } else {
-          rest.push(bs);
+          merged.set(bs.address, bs);
         }
       }
-      return [...gtRows, ...rest];
+      // 3. Launchpad tokens the other two haven't indexed yet still show up.
+      for (const [addr, d] of Object.entries(dyor)) {
+        const cur = merged.get(addr);
+        if (cur) {
+          if (d.holders && !cur.holders) cur.holders = d.holders;
+          if (d.logoUrl && !cur.logoUrl) cur.logoUrl = d.logoUrl;
+          if (d.createdAtMs && cur.ageMinutes < 0) {
+            cur.ageMinutes = Math.max(0, (Date.now() - d.createdAtMs) / 60_000);
+          }
+        } else {
+          merged.set(addr, dyorToRow(addr, d));
+        }
+      }
+
+      const rows = [...merged.values()].sort((a, b) => b.vol24h - a.vol24h);
+      if (rows.length) writeCache(cacheKey, rows);
+      return rows;
     },
   });
+}
+
+/** A launchpad token the DEX indexer and explorer haven't picked up yet. */
+function dyorToRow(address: string, d: DyorTokenInfo): TokenRow {
+  const symbol = d.symbol ?? "?";
+  return {
+    address,
+    name: d.name ?? symbol,
+    symbol,
+    logo: symbol.slice(0, 2).toUpperCase(),
+    logoUrl: d.logoUrl,
+    ageMinutes: d.createdAtMs ? Math.max(0, (Date.now() - d.createdAtMs) / 60_000) : -1,
+    price: 0,
+    priceChange1h: 0,
+    priceChange24h: 0,
+    mcap: 0,
+    fdv: 0,
+    vol5m: 0,
+    vol1h: 0,
+    vol6h: 0,
+    vol24h: 0,
+    buys24h: 0,
+    sells24h: 0,
+    liquidityEth: 0,
+    graduationPct: 0,
+    holders: d.holders ?? 0,
+    topHolderPct: 0,
+    deployer: "",
+    status: d.createdAtMs && Date.now() - d.createdAtMs < 3_600_000 ? ["new"] : [],
+    socialHeat: 0,
+    lockedLiquidity: false,
+    feeSplit: "70/30",
+    socials: {},
+    lastTradeMs: Date.now(),
+    priceSource: "none",
+    indexed: false,
+    launchpadName: "DYOR Fun",
+  };
 }
 
 /**
@@ -111,26 +167,15 @@ export function useTokens() {
  * documented target and flag it as an estimate so the UI can say so.
  */
 export function applyDyor(token: TokenRow, d: DyorTokenInfo): TokenRow {
+  // Curve progress / graduation are deliberately NOT applied: they can't be
+  // tracked consistently across all three chains, so we only take the facts
+  // DYOR reports reliably — venue, holders, logo and launch time.
   token.launchpadName = token.launchpadName ?? "DYOR Fun";
-  token.curveTarget = d.curveTarget;
-  token.graduated = d.graduated;
-
-  if (d.curveProgress > 0 || d.graduated) {
-    token.graduationPct = d.graduated ? 100 : d.curveProgress;
-    token.curveEstimated = false;
-  } else if (token.liquidityUsd) {
-    token.graduationPct = estimateCurveProgress(token.liquidityUsd, d.curveTarget);
-    token.curveEstimated = true;
-  }
-
   if (d.holders && !token.holders) token.holders = d.holders;
   if (d.logoUrl && !token.logoUrl) token.logoUrl = d.logoUrl;
   if (d.createdAtMs && token.ageMinutes < 0) {
     token.ageMinutes = Math.max(0, (Date.now() - d.createdAtMs) / 60_000);
   }
-
-  const flag = d.graduated ? "graduated" : "graduating";
-  if (!token.status.includes(flag)) token.status = [...token.status, flag];
   return token;
 }
 
@@ -138,7 +183,6 @@ export interface RowEnrichment {
   holders?: number;
   dexName?: string;
   launchpadName?: string;
-  graduated?: boolean;
   ageMinutes?: number;
   vol5m?: number;
   vol1h?: number;
@@ -186,10 +230,8 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
               const curve = pools.find((p) => p.isLaunchpad);
               const dex = pools.find((p) => !p.isLaunchpad);
               e.dexName = top.dexName;
-              if (curve) {
-                e.launchpadName = curve.dexName;
-                e.graduated = Boolean(dex);
-              }
+              if (curve) e.launchpadName = curve.dexName;
+              void dex;
               // Oldest pool = the token's real launch age.
               const oldest = pools.reduce(
                 (m, p) => (p.createdAtMs > 0 && (m === 0 || p.createdAtMs < m) ? p.createdAtMs : m),
@@ -356,10 +398,8 @@ async function loadTokenDetail(
     // bonding-curve launchpad; a plain AMM listing gets no such label.
     if (launchpadPool) {
       token.launchpadName = launchpadPool.dexName;
-      token.graduated = Boolean(dexPool);
-      token.graduationPct = token.graduated ? 100 : 0;
-      token.status = [...token.status, token.graduated ? "graduated" : "graduating"];
     }
+    void dexPool;
   }
   // DYOR is authoritative for curve progress + graduation on all three chains.
   if (dyor) applyDyor(token, dyor);

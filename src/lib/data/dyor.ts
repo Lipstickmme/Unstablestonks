@@ -141,10 +141,13 @@ function unwrapOne(body: unknown): DyorToken | null {
  * whole terminal list with real curve progress + graduation state.
  */
 export async function fetchDyorTokens(cfg: ChainConfig): Promise<Record<string, DyorTokenInfo>> {
+  const slug = cfg.dyorSlug;
+  if (!slug) return {};
+  // The API is chain-namespaced: /api/<slug>/... (confirmed by /api/stable/openapi).
   const paths = [
-    `/api/tokens?limit=100&chainId=${cfg.id}`,
-    `/api/tokens?limit=100&chain=${cfg.id}`,
-    `/api/tokens?limit=100`,
+    `/api/${slug}/tokens?limit=100&sort=newest`,
+    `/api/${slug}/tokens?limit=100`,
+    `/api/${slug}/tokens`,
   ];
   for (const host of HOSTS) {
     for (const path of paths) {
@@ -169,12 +172,10 @@ export async function fetchDyorToken(
   cfg: ChainConfig,
   address: string,
 ): Promise<DyorTokenInfo | null> {
+  const slug = cfg.dyorSlug;
+  if (!slug) return null;
   const addr = address.toLowerCase();
-  const paths = [
-    `/api/tokens/${addr}?chainId=${cfg.id}`,
-    `/api/tokens/${addr}`,
-    `/api/token/${addr}`,
-  ];
+  const paths = [`/api/${slug}/tokens/${addr}`, `/api/${slug}/token/${addr}`];
   for (const host of HOSTS) {
     for (const path of paths) {
       const body = await proxiedFetchJson<unknown>(`${host}${path}`, { timeoutMs: 9_000 });

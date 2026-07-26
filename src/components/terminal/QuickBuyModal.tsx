@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { TokenRow } from "@/lib/types";
@@ -11,14 +12,24 @@ import { SwapPanel } from "./SwapPanel";
  * request. The swap panel's primary button also connects if still disconnected.
  */
 export function QuickBuyModal({ token, onClose }: { token: TokenRow; onClose: () => void }) {
-  // Close on Escape.
+  // Close on Escape, and lock background scroll while open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [onClose]);
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  // Portal to <body>: rendered inside the scrollable table the dialog inherits
+  // that scroll context and drifts far down the page. At the body root it always
+  // centres on the viewport, right where the click happened.
+  return createPortal(
     <div
       className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
       onClick={onClose}
@@ -59,6 +70,7 @@ export function QuickBuyModal({ token, onClose }: { token: TokenRow; onClose: ()
           <SwapPanel token={token} defaultSide="buy" />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

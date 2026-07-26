@@ -85,12 +85,7 @@ function Terminal() {
         // pool data with the enrichment pass.
         if (e.holders && !next.holders) next.holders = e.holders;
         if (e.dexName && !next.dexName) next.dexName = e.dexName;
-        if (e.launchpadName && !next.launchpadName) {
-          next.launchpadName = e.launchpadName;
-          next.graduated = e.graduated;
-          next.graduationPct = e.graduated ? 100 : 0;
-          next.status = [...next.status, e.graduated ? "graduated" : "graduating"];
-        }
+        if (e.launchpadName && !next.launchpadName) next.launchpadName = e.launchpadName;
         if (e.ageMinutes != null && next.ageMinutes < 0) next.ageMinutes = e.ageMinutes;
         if (e.vol5m && !next.vol5m) next.vol5m = e.vol5m;
         if (e.vol1h && !next.vol1h) next.vol1h = e.vol1h;
@@ -144,7 +139,7 @@ function Terminal() {
           className="fade-up grid grid-cols-1 gap-4 md:grid-cols-2"
           style={{ animationDelay: "90ms" }}
         >
-          <BundleWatch trades={chainTrades} />
+          <BundleWatch trades={chainTrades} tokens={tokens} />
           <WhaleWatch trades={chainTrades} />
         </div>
 
