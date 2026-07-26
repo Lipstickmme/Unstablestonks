@@ -11,6 +11,7 @@
 // in that case rather than implying the team skipped it.
 
 import type { ChainConfig } from "@/config/chains";
+import type { TokenRow } from "../types";
 import { proxiedFetchJson } from "../net";
 
 export interface DexPaidStatus {
@@ -51,4 +52,188 @@ export async function fetchDexPaid(cfg: ChainConfig, address: string): Promise<D
   };
   cache.set(key, { ts: Date.now(), data });
   return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DexScreener as a market source.
+//
+// Two free, key-less endpoints:
+//   /latest/dex/search?q=<address>   every pair containing that token
+//   /latest/dex/tokens/<a,b,c…>      pairs for up to 30 token addresses
+//
+// Searching for the chain's own quote asset (USDT0 on Stable, WETH on Robinhood)
+// returns the chain's pairs, which makes this a second full token list wherever
+// DexScreener indexes the chain. Results are filtered by `chainId` so a search
+// that matches a same-named token elsewhere can never leak another chain's rows.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DsToken {
+  address?: string;
+  name?: string;
+  symbol?: string;
+}
+
+interface DsPair {
+  chainId?: string;
+  dexId?: string;
+  pairAddress?: string;
+  baseToken?: DsToken;
+  quoteToken?: DsToken;
+  priceUsd?: string;
+  priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number };
+  volume?: { m5?: number; h1?: number; h6?: number; h24?: number };
+  txns?: { h24?: { buys?: number; sells?: number } };
+  liquidity?: { usd?: number };
+  fdv?: number;
+  marketCap?: number;
+  pairCreatedAt?: number;
+  info?: {
+    imageUrl?: string;
+    websites?: { url?: string }[];
+    socials?: { type?: string; url?: string }[];
+  };
+}
+
+const num = (v: unknown) => {
+  const x = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : NaN;
+  return isFinite(x) ? x : 0;
+};
+
+/** Fold a chain's DexScreener pairs into one row per base token. */
+function rowsFromPairs(cfg: ChainConfig, pairs: DsPair[]): TokenRow[] {
+  const slug = cfg.dexscreenerSlug;
+  const now = Date.now();
+  const quotes = new Set(
+    [cfg.wrappedNative, cfg.stablecoin?.address, cfg.intermediary?.address]
+      .filter(Boolean)
+      .map((a) => (a as string).toLowerCase()),
+  );
+
+  const byAddress = new Map<string, TokenRow & { _liq: number }>();
+  for (const p of pairs) {
+    if (slug && p.chainId && p.chainId !== slug) continue;
+    const base = p.baseToken;
+    const address = (base?.address ?? "").toLowerCase();
+    if (!address || quotes.has(address)) continue;
+
+    const liq = num(p.liquidity?.usd);
+    const createdMs = p.pairCreatedAt ?? 0;
+    const ageMinutes = createdMs > 0 ? Math.max(0, (now - createdMs) / 60_000) : -1;
+    const symbol = base?.symbol ?? "?";
+
+    const existing = byAddress.get(address);
+    if (existing) {
+      // Multiple pools for one token: volumes add up, deepest pool prices it.
+      existing.vol5m += num(p.volume?.m5);
+      existing.vol1h += num(p.volume?.h1);
+      existing.vol6h += num(p.volume?.h6);
+      existing.vol24h += num(p.volume?.h24);
+      existing.buys24h += num(p.txns?.h24?.buys);
+      existing.sells24h += num(p.txns?.h24?.sells);
+      existing.liquidityUsd = (existing.liquidityUsd ?? 0) + liq;
+      if (liq > existing._liq) {
+        existing._liq = liq;
+        existing.price = num(p.priceUsd) || existing.price;
+        existing.priceChange24h = num(p.priceChange?.h24);
+        existing.priceChange1h = num(p.priceChange?.h1);
+        existing.priceChange5m = num(p.priceChange?.m5);
+        existing.dexName = p.dexId ?? existing.dexName;
+      }
+      if (ageMinutes >= 0 && (existing.ageMinutes < 0 || ageMinutes > existing.ageMinutes)) {
+        existing.ageMinutes = ageMinutes;
+      }
+      continue;
+    }
+
+    const status: TokenRow["status"] = [];
+    if (ageMinutes >= 0 && ageMinutes < 60) status.push("new");
+    if (num(p.priceChange?.h24) >= 25 && num(p.volume?.h24) > 1000) status.push("trending");
+
+    byAddress.set(address, {
+      _liq: liq,
+      address,
+      name: base?.name ?? symbol,
+      symbol,
+      logo: symbol.slice(0, 2).toUpperCase(),
+      logoUrl: p.info?.imageUrl,
+      ageMinutes,
+      price: num(p.priceUsd),
+      priceChange1h: num(p.priceChange?.h1),
+      priceChange24h: num(p.priceChange?.h24),
+      priceChange5m: num(p.priceChange?.m5),
+      mcap: num(p.marketCap) || num(p.fdv),
+      fdv: num(p.fdv),
+      vol5m: num(p.volume?.m5),
+      vol1h: num(p.volume?.h1),
+      vol6h: num(p.volume?.h6),
+      vol24h: num(p.volume?.h24),
+      buys24h: num(p.txns?.h24?.buys),
+      sells24h: num(p.txns?.h24?.sells),
+      liquidityEth: 0,
+      liquidityUsd: liq,
+      graduationPct: 0,
+      holders: 0,
+      topHolderPct: 0,
+      deployer: "",
+      status,
+      socialHeat: 0,
+      lockedLiquidity: false,
+      feeSplit: "90/10",
+      socials: {
+        website: p.info?.websites?.[0]?.url,
+        twitter: p.info?.socials?.find((s) => s.type === "twitter")?.url,
+        telegram: p.info?.socials?.find((s) => s.type === "telegram")?.url,
+      },
+      lastTradeMs: 0,
+      priceSource: "dexscreener",
+      indexed: num(p.priceUsd) > 0,
+      dexName: p.dexId,
+    });
+  }
+
+  return [...byAddress.values()].map(({ _liq, ...row }) => {
+    void _liq;
+    return row;
+  });
+}
+
+/**
+ * The chain's token list according to DexScreener, discovered by searching for
+ * its quote assets. Empty (never an error) when the chain isn't indexed.
+ */
+export async function fetchDexScreenerTokens(cfg: ChainConfig): Promise<TokenRow[]> {
+  const quotes = [cfg.intermediary?.address, cfg.wrappedNative, cfg.stablecoin?.address].filter(
+    (a, i, arr) => a && arr.indexOf(a) === i,
+  ) as string[];
+  if (!quotes.length) return [];
+
+  const results = await Promise.all(
+    quotes
+      .slice(0, 2)
+      .map((q) =>
+        proxiedFetchJson<{ pairs?: DsPair[] }>(
+          `https://api.dexscreener.com/latest/dex/search?q=${q}`,
+          { timeoutMs: 9_000, headers: { Accept: "application/json" } },
+        ),
+      ),
+  );
+  const pairs = results.flatMap((r) => r?.pairs ?? []);
+  return pairs.length ? rowsFromPairs(cfg, pairs) : [];
+}
+
+/**
+ * Market data for specific tokens (up to 30 per call) — used to price rows that
+ * GeckoTerminal doesn't cover.
+ */
+export async function fetchDexScreenerMarkets(
+  cfg: ChainConfig,
+  addresses: string[],
+): Promise<TokenRow[]> {
+  if (!addresses.length) return [];
+  const batch = addresses.slice(0, 30).join(",");
+  const body = await proxiedFetchJson<{ pairs?: DsPair[] }>(
+    `https://api.dexscreener.com/latest/dex/tokens/${batch}`,
+    { timeoutMs: 9_000, headers: { Accept: "application/json" } },
+  );
+  return body?.pairs?.length ? rowsFromPairs(cfg, body.pairs) : [];
 }

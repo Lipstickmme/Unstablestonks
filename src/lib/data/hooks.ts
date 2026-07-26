@@ -10,7 +10,13 @@ import {
   fetchTokens,
   fetchTokenTransfers,
 } from "./blockscout";
-import { fetchDexPaid, type DexPaidStatus } from "./dexscreener";
+import {
+  fetchDexPaid,
+  fetchDexScreenerMarkets,
+  fetchDexScreenerTokens,
+  type DexPaidStatus,
+} from "./dexscreener";
+import { fetchNewLaunches } from "./discovery";
 import {
   fetchNetworkPools,
   fetchOhlcvCandles,
@@ -68,13 +74,63 @@ export function useChainStats() {
 }
 
 /**
- * Token universe for the active chain. Two real sources merged:
- *  - GeckoTerminal pools (DEX-indexed chains): live 5m/1h/24h volumes, price
- *    changes, buys/sells, pool age, venue/launchpad labels, sparklines.
- *  - Blockscout token registry: holders, icons, explorer prices — and the only
- *    source on chains GeckoTerminal doesn't index yet.
- * GT rows lead (they carry live market structure); explorer data fills holders
- * for overlaps and appends registry-only tokens after.
+ * Fold `extra` into `into`, keeping whichever value is actually known. Market
+ * figures are taken from the source that has them; a zero never overwrites a
+ * real number, and identity fields (name/symbol/logo) prefer what's already set.
+ */
+function foldRow(into: TokenRow, extra: TokenRow): void {
+  const better = (a: number, b: number) => (a > 0 ? a : b);
+
+  into.price = better(into.price, extra.price);
+  into.mcap = better(into.mcap, extra.mcap);
+  into.fdv = better(into.fdv, extra.fdv);
+  into.vol5m = better(into.vol5m, extra.vol5m);
+  into.vol1h = better(into.vol1h, extra.vol1h);
+  into.vol6h = better(into.vol6h, extra.vol6h);
+  into.vol24h = better(into.vol24h, extra.vol24h);
+  into.buys24h = better(into.buys24h, extra.buys24h);
+  into.sells24h = better(into.sells24h, extra.sells24h);
+  into.holders = better(into.holders, extra.holders);
+  into.liquidityUsd = better(into.liquidityUsd ?? 0, extra.liquidityUsd ?? 0) || undefined;
+  into.totalSupply = into.totalSupply ?? extra.totalSupply;
+  into.decimals = into.decimals ?? extra.decimals;
+  into.logoUrl = into.logoUrl ?? extra.logoUrl;
+  into.dexName = into.dexName ?? extra.dexName;
+  into.launchpadName = into.launchpadName ?? extra.launchpadName;
+  into.sparkline = into.sparkline ?? extra.sparkline;
+  if (into.priceChange24h === 0) into.priceChange24h = extra.priceChange24h;
+  if (into.priceChange1h === 0) into.priceChange1h = extra.priceChange1h;
+  if (into.ageMinutes < 0 && extra.ageMinutes >= 0) into.ageMinutes = extra.ageMinutes;
+  if (!into.indexed && extra.indexed) {
+    into.indexed = true;
+    into.priceSource = extra.priceSource;
+  }
+  if (into.symbol === "?" && extra.symbol !== "?") {
+    into.symbol = extra.symbol;
+    into.name = extra.name;
+    into.logo = extra.logo;
+  }
+  for (const s of extra.status) if (!into.status.includes(s)) into.status.push(s);
+  if (!into.socials.website) into.socials.website = extra.socials.website;
+  if (!into.socials.twitter) into.socials.twitter = extra.socials.twitter;
+  if (!into.socials.telegram) into.socials.telegram = extra.socials.telegram;
+}
+
+/**
+ * Token universe for the active chain — the union of four independent sources,
+ * in priority order. Every one is optional: a source that fails or doesn't cover
+ * the chain contributes nothing, and can never remove a row another source found.
+ *
+ *  1. GeckoTerminal pools + new_pools (2 pages each) — the richest market data
+ *     where the chain is indexed: 5m/1h/24h volumes, buys/sells, venue, trend.
+ *  2. DexScreener — a second full list, found by searching the chain's own quote
+ *     assets. Fills chains and tokens GeckoTerminal is behind on.
+ *  3. Blockscout token registry — holders, icons, and the tokens no DEX indexer
+ *     has picked up.
+ *  4. On-chain factory logs — pool-creation events read straight off the RPC.
+ *     This is the only source that cannot lag, so it's what actually surfaces
+ *     launches from the last few hours. Rows arrive unpriced and get their
+ *     market data from 1/2 above once an indexer catches up.
  */
 export function useTokens() {
   const { chain, chainKey } = useChain();
@@ -86,33 +142,45 @@ export function useTokens() {
     initialData: () => readCache<TokenRow[]>(cacheKey),
     initialDataUpdatedAt: 0,
     queryFn: async () => {
-      // GeckoTerminal pools + the explorer registry are the sources that
-      // actually carry market data. They are UNIONED, so a slow or failing
-      // source can only ever contribute fewer rows, never remove rows the other
-      // one found. DYOR is deliberately NOT a list source: its feed is dominated
-      // by brand-new micro-cap launches and pulling it in here buried the real
-      // top tokens. It stays an opt-in enrichment (see useDyorTokens).
-      const [gtRows, bsRows] = await Promise.all([
+      const [gtRows, dsRows, bsRows, freshRows] = await Promise.all([
         fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
+        fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
+        fetchNewLaunches(chainKey, chain).catch(() => [] as TokenRow[]),
       ]);
 
       const merged = new Map<string, TokenRow>();
-      for (const t of gtRows) merged.set(t.address, t);
-      for (const bs of bsRows) {
-        const cur = merged.get(bs.address);
-        if (cur) {
-          cur.holders = cur.holders || bs.holders;
-          cur.logoUrl = cur.logoUrl ?? bs.logoUrl;
-          cur.totalSupply = cur.totalSupply ?? bs.totalSupply;
-          cur.mcap = cur.mcap || bs.mcap;
-          cur.vol24h = cur.vol24h || bs.vol24h;
-        } else {
-          merged.set(bs.address, bs);
+      // Order matters: the first source to introduce an address owns its market
+      // figures, later ones only fill blanks.
+      for (const group of [gtRows, dsRows, bsRows, freshRows]) {
+        for (const row of group) {
+          const cur = merged.get(row.address);
+          if (cur) foldRow(cur, row);
+          else merged.set(row.address, row);
         }
       }
 
-      const rows = [...merged.values()].sort((a, b) => b.vol24h - a.vol24h);
+      // Price whatever is still unpriced through DexScreener's batch endpoint —
+      // one call covers 30 addresses, so this is cheap even on a full list.
+      const unpriced = [...merged.values()].filter((t) => !t.indexed).map((t) => t.address);
+      if (unpriced.length) {
+        const priced = await fetchDexScreenerMarkets(chain, unpriced).catch(() => [] as TokenRow[]);
+        for (const p of priced) {
+          const cur = merged.get(p.address);
+          if (cur) foldRow(cur, p);
+        }
+      }
+
+      // Volume ranks the list, but a brand-new launch has none yet — so tokens
+      // discovered in the last 24h sort by age at the top of the untraded tail.
+      const rows = [...merged.values()].sort((a, b) => {
+        if (a.vol24h !== b.vol24h) return b.vol24h - a.vol24h;
+        const aNew = a.ageMinutes >= 0 && a.ageMinutes < 1440;
+        const bNew = b.ageMinutes >= 0 && b.ageMinutes < 1440;
+        if (aNew !== bNew) return aNew ? -1 : 1;
+        return a.ageMinutes - b.ageMinutes;
+      });
+
       if (rows.length) {
         writeCache(cacheKey, rows);
         return rows;

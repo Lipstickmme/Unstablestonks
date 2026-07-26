@@ -243,7 +243,16 @@ export function TokenTable({
   const rows = useMemo(() => {
     let r = tokens;
     if (watchOnly) r = r.filter((t) => watchlist.has(t.address));
-    if (filter !== "all") r = r.filter((t) => t.status.includes(filter));
+    // "New" is an age question, not a badge question: the NEW badge only lasts
+    // an hour, but a launch scanned off the chain minutes ago has no volume yet
+    // and would otherwise never appear under any tab.
+    if (filter === "new") {
+      r = r.filter(
+        (t) => t.status.includes("new") || (t.ageMinutes >= 0 && t.ageMinutes < 24 * 60),
+      );
+    } else if (filter !== "all") {
+      r = r.filter((t) => t.status.includes(filter));
+    }
     if (query) {
       const q = query.toLowerCase();
       r = r.filter(

@@ -245,14 +245,20 @@ export async function fetchTopPool(cfg: ChainConfig, address: string): Promise<s
 export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
   if (!cfg.geckoterminalNetwork) return [];
   const net = cfg.geckoterminalNetwork;
-  const [top, fresh] = await Promise.all([
+  // Two pages of each feed: one page of `pools` is only the top 20 by liquidity,
+  // which on a young chain buries everything that launched today. `new_pools` is
+  // the launch feed. Pages beyond the first simply come back empty on a small
+  // chain, so this costs nothing where there's nothing to find.
+  const responses = await Promise.all([
     gt<GtPoolsResp>(`/networks/${net}/pools?include=base_token%2Cdex&page=1`),
+    gt<GtPoolsResp>(`/networks/${net}/pools?include=base_token%2Cdex&page=2`),
     gt<GtPoolsResp>(`/networks/${net}/new_pools?include=base_token%2Cdex&page=1`),
+    gt<GtPoolsResp>(`/networks/${net}/new_pools?include=base_token%2Cdex&page=2`),
   ]);
 
   const tokensById = new Map<string, GtIncluded>();
   const dexNames = new Map<string, string>();
-  for (const resp of [top, fresh]) {
+  for (const resp of responses) {
     for (const inc of resp?.included ?? []) {
       if (inc.type === "token" && inc.id) tokensById.set(inc.id, inc);
       if (inc.type === "dex" && inc.id)
@@ -266,7 +272,7 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
     TokenRow & { _reserve: number; _onCurve: boolean; _onDex: boolean }
   >();
 
-  const pools = [...(top?.data ?? []), ...(fresh?.data ?? [])];
+  const pools = responses.flatMap((r) => r?.data ?? []);
   for (const p of pools) {
     const a = p.attributes ?? {};
     const baseId = p.relationships?.base_token?.data?.id ?? "";
