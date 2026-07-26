@@ -233,12 +233,14 @@ function candidateRoutes(
   add(cfg.wrappedNative);
   add(cfg.stablecoin?.address);
   add(cfg.intermediary?.address);
+  for (const extra of cfg.extraRoutingBases ?? []) add(extra);
   return [[from, to], ...bases.map((b) => [from, b, to])];
 }
 
 /** Label a routing address with the symbol the chain config knows it by. */
 function shortSym(cfg: ChainConfig, addr: `0x${string}`): string {
   if (sameAddr(addr, cfg.intermediary?.address)) return cfg.intermediary!.symbol;
+  if (cfg.extraRoutingBases?.some((b) => sameAddr(b, addr))) return `${addr.slice(0, 6)}…`;
   if (sameAddr(addr, cfg.wrappedNative)) return `W${cfg.nativeCurrency.symbol}`;
   if (sameAddr(addr, cfg.stablecoin?.address)) return cfg.stablecoin!.symbol;
   return `${addr.slice(0, 6)}…`;

@@ -7,7 +7,6 @@ import { LiveTrades } from "@/components/terminal/LiveTrades";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
 import { BundleWatch } from "@/components/terminal/BundleWatch";
-import { BridgePanel } from "@/components/terminal/BridgePanel";
 import { TokenIcon } from "@/components/terminal/TokenIcon";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import {
@@ -326,6 +325,10 @@ function TokenDetail() {
                     ))}
                   </div>
                 </section>
+
+                {/* Activity reads as a continuation of the holder list, so it
+                    sits under it in the main column rather than in the rail. */}
+                <LiveTrades trades={trades} />
               </div>
 
               <div className="space-y-4">
@@ -343,10 +346,8 @@ function TokenDetail() {
                   symbol={token.symbol}
                   shareOfVoice={shareOfVoice}
                 />
-                <BridgePanel />
                 <BundleWatch trades={trades} />
                 <WhaleWatch trades={trades} />
-                <LiveTrades trades={trades} />
               </div>
             </div>
           </>

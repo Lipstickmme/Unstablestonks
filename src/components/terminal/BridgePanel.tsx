@@ -11,7 +11,11 @@ import { getBridgeQuote, executeBridge, type BridgeQuote } from "@/lib/bridge";
  * press one button, sign. The routing steps Relay returns are never shown —
  * only the wallet prompts and a single status line.
  */
-export function BridgePanel() {
+/**
+ * `bare` drops the card chrome and heading so the panel can sit inside the
+ * header's bridge dialog, which supplies its own.
+ */
+export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
   const { chain, chainKey } = useChain();
   const wallet = useWallet();
 
@@ -109,13 +113,15 @@ export function BridgePanel() {
       : `Bridge to ${chain.shortName}`;
 
   return (
-    <section className="card-surface p-4">
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium">Bridge in funds</h3>
-        <span className="chip !py-0 text-[9px]">via Relay</span>
-      </div>
+    <section className={bare ? "" : "card-surface p-4"}>
+      {!bare && (
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium">Bridge in funds</h3>
+          <span className="chip !py-0 text-[9px]">via Relay</span>
+        </div>
+      )}
 
-      <div className="mt-3 flex items-center gap-2 text-xs">
+      <div className={`flex items-center gap-2 text-xs ${bare ? "" : "mt-3"}`}>
         <select
           value={from}
           onChange={(e) => setFrom(e.target.value as ChainKey)}

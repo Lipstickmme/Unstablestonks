@@ -67,6 +67,13 @@ export interface ChainConfig {
    * DEX hop — required on chains whose wrapped-native is unusable (Stable).
    */
   intermediary?: Intermediary;
+  /** Extra tokens worth quoting a hop through (e.g. EURC on Arc). */
+  extraRoutingBases?: `0x${string}`[];
+  /**
+   * True on chains where a value transfer to the zero address reverts rather
+   * than burning (Arc enforces this at runtime, since the gas asset is USDC).
+   */
+  forbidsZeroAddressValue?: boolean;
   router?: RouterConfig;
   /** GeckoTerminal network slug, if the chain is indexed there. */
   geckoterminalNetwork?: string;
@@ -95,11 +102,11 @@ function env(key: string): string | undefined {
 const isAddr = (v: string | undefined): v is string => Boolean(v && /^0x[0-9a-fA-F]{40}$/.test(v));
 
 /**
- * Arc runs as mainnet by default. Circle shipped a long public testnet phase and
- * some tooling still points there, so VITE_ARC_TESTNET=1 flips the whole entry —
- * id, RPC, explorer and label — back to the testnet in one switch.
+ * Circle has not launched Arc mainnet — its docs publish testnet endpoints only.
+ * Set VITE_ARC_MAINNET=1 to move the whole Arc entry (id, RPC, explorer, label)
+ * onto mainnet the day it ships, without touching this file.
  */
-const ARC_TESTNET = env("VITE_ARC_TESTNET") === "1";
+const ARC_MAINNET = env("VITE_ARC_MAINNET") === "1";
 
 /**
  * Router config from env, per chain:
@@ -210,48 +217,66 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
   },
   arc: {
     key: "arc",
-    // Arc mainnet. Circle's published testnet is 5042002; mainnet is 5042.
-    // Every endpoint here is env-overridable so a corrected value is a config
-    // change, not a redeploy of this file — set VITE_ARC_TESTNET=1 to point the
-    // whole chain back at the public testnet.
-    id: ARC_TESTNET ? 5042002 : Number(env("VITE_CHAIN_ID_ARC") ?? 5042),
+    // ── Arc (Circle) ──────────────────────────────────────────────────────────
+    // Values from Circle's own docs (docs.arc.io/arc/references/evm-differences,
+    // /contract-addresses) and the circlefin/skills Arc reference.
+    //
+    // Arc's mainnet is NOT live yet — Circle publishes testnet endpoints only —
+    // so the chain runs on testnet and VITE_ARC_MAINNET=1 flips the whole entry
+    // (id, RPC, explorer, label) the moment mainnet ships. Every endpoint is
+    // individually overridable too, so no redeploy of this file is needed.
+    id: ARC_MAINNET ? Number(env("VITE_CHAIN_ID_ARC") ?? 5042) : 5042002,
     name: "Arc",
     shortName: "ARC",
     badge: "A",
-    network: ARC_TESTNET ? "testnet" : "mainnet",
-    live: !ARC_TESTNET,
+    network: ARC_MAINNET ? "mainnet" : "testnet",
+    live: ARC_MAINNET,
     rpcUrls: [
       env("VITE_RPC_ARC") ??
-        (ARC_TESTNET ? "https://rpc.testnet.arc.network" : "https://rpc.arc.network"),
+        (ARC_MAINNET ? "https://rpc.arc.network" : "https://rpc.testnet.arc.network"),
     ],
     explorerUrl:
       env("VITE_EXPLORER_ARC") ??
-      (ARC_TESTNET ? "https://testnet.arcscan.app" : "https://arcscan.app"),
+      (ARC_MAINNET ? "https://arcscan.app" : "https://testnet.arcscan.app"),
     explorer: {
       kind: "blockscout",
       apiBase:
         env("VITE_EXPLORER_API_ARC") ??
-        (ARC_TESTNET ? "https://testnet.arcscan.app/api/v2" : "https://arcscan.app/api/v2"),
+        (ARC_MAINNET ? "https://arcscan.app/api/v2" : "https://testnet.arcscan.app/api/v2"),
     },
-    nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 6 },
+    // Arc's gas asset IS USDC, and the native view carries 18 decimals while the
+    // ERC-20 view of the SAME funds carries 6 (a 10^12 conversion factor). This
+    // was configured as 6 and that is a real error: balances and any native
+    // value would have been off by a factor of a trillion.
+    nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 },
     gasToken: "USDC",
+    // The USDC ERC-20 predeploy — the same balance as native gas, exposed as a
+    // token. Never add the two together; they are one pool of funds.
     stablecoin: {
       symbol: "USDC",
-      address: env("VITE_USDC_ARC") as `0x${string}` | undefined,
+      address: (env("VITE_USDC_ARC") ??
+        "0x3600000000000000000000000000000000000000") as `0x${string}`,
       decimals: 6,
     },
+    // Arc documents no wrapped-native token, so — exactly as on Stable — swaps
+    // route through the ERC-20 view of the gas asset (mode "erc20"): approve +
+    // transferFrom rather than sending native value.
     wrappedNative: env("VITE_WNATIVE_ARC") as `0x${string}` | undefined,
-    // Uniswap V3 on Arc (from the Uniswap SDK). Swaps enable once the routing
-    // asset is set — wrapped USDC via VITE_WNATIVE_ARC, or an ERC-20 hop via
-    // VITE_INTERMEDIARY_ARC for the same reason Stable needs one.
-    intermediary: isAddr(env("VITE_INTERMEDIARY_ARC"))
-      ? {
-          address: env("VITE_INTERMEDIARY_ARC") as `0x${string}`,
-          decimals: Number(env("VITE_INTERMEDIARY_DECIMALS_ARC") ?? 6),
-          mode: "erc20",
-          symbol: env("VITE_INTERMEDIARY_SYMBOL_ARC") ?? "USDC",
-        }
-      : undefined,
+    intermediary: {
+      address: (env("VITE_INTERMEDIARY_ARC") ??
+        "0x3600000000000000000000000000000000000000") as `0x${string}`,
+      decimals: Number(env("VITE_INTERMEDIARY_DECIMALS_ARC") ?? 6),
+      mode: "erc20",
+      symbol: env("VITE_INTERMEDIARY_SYMBOL_ARC") ?? "USDC",
+    },
+    // EURC is Arc's other canonical stablecoin; quoting hops through it as well
+    // catches pairs that don't trade directly against USDC.
+    extraRoutingBases: [
+      (env("VITE_EURC_ARC") ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a") as `0x${string}`,
+    ],
+    // Value transfers to the zero address REVERT on Arc ("Zero address not
+    // allowed") and burning is forbidden, so nothing may ever route funds there.
+    forbidsZeroAddressValue: true,
     router: routerFromEnv("ARC") ?? {
       kind: "uniswapV3",
       address: "0x53bf6b0684ec7ef91e1387da3d1a1769bc5a6f77",
@@ -262,9 +287,9 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     dyorSlug: "arc",
     dexscreenerSlug: env("VITE_DS_NETWORK_ARC") ?? "arc",
     accent: "oklch(0.72 0.16 250)", // Circle blue
-    tagline: ARC_TESTNET
-      ? "Circle L1 · USDC-native gas · testnet"
-      : "Circle L1 · USDC-native gas · stablecoin rails",
+    tagline: ARC_MAINNET
+      ? "Circle L1 · USDC is the gas · programmable money"
+      : "Circle L1 · USDC is the gas · public testnet",
   },
 };
 

@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Search, Star } from "lucide-react";
+import { Search, Star, Repeat } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { useWatchlist } from "@/lib/watchlist";
 import { ChainSwitcher } from "./ChainSwitcher";
 import { WalletButton } from "./WalletButton";
+import { BridgeModal } from "./BridgeModal";
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -42,6 +43,7 @@ function SearchBox({ className = "" }: { className?: string }) {
 
 export function Header() {
   const { count } = useWatchlist();
+  const [bridgeOpen, setBridgeOpen] = useState(false);
   const routerState = useRouterState();
   const path = routerState.location.pathname;
   const search = routerState.location.search as { view?: string };
@@ -86,6 +88,16 @@ export function Header() {
         <SearchBox className="ml-auto hidden max-w-md flex-1 sm:flex" />
 
         <div className="ml-auto flex items-center gap-2 sm:ml-0">
+          {/* Bridging isn't token-specific, so it lives here rather than on a
+              token page, and opens as a dialog exactly like quick-buy. */}
+          <button
+            onClick={() => setBridgeOpen(true)}
+            title="Bridge funds in"
+            aria-label="Bridge funds in"
+            className="grid h-8 w-8 place-items-center rounded-full border border-border bg-surface text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+          >
+            <Repeat className="h-3.5 w-3.5" />
+          </button>
           <ChainSwitcher />
           <WalletButton />
         </div>
@@ -95,6 +107,8 @@ export function Header() {
       <div className="border-t border-border px-3 py-2 sm:hidden">
         <SearchBox className="flex w-full" />
       </div>
+
+      {bridgeOpen && <BridgeModal onClose={() => setBridgeOpen(false)} />}
     </header>
   );
 }
