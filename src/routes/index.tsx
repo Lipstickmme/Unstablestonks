@@ -10,6 +10,7 @@ import {
   useChainStats,
   useTokens,
   useRowEnrichment,
+  useTokenInsights,
   useChainTrades,
   useDyorTokens,
   applyDyor,
@@ -64,6 +65,7 @@ function Terminal() {
   );
   const heatQ = useXSocialHeatMap(topAddresses);
   const enrichQ = useRowEnrichment(tokensQ.data);
+  const insightsQ = useTokenInsights(tokensQ.data);
   const dyorQ = useDyorTokens();
 
   const tokens = useMemo(() => {
@@ -152,6 +154,7 @@ function Terminal() {
             initialQuery={q}
             watchOnly={view === "watch"}
             bundles={bundlesByToken}
+            insights={insightsQ.data}
           />
         </div>
 

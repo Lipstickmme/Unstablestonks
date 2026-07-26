@@ -132,12 +132,13 @@ export async function fetchTokenHolders(
   address: string,
   decimals: number,
   totalSupply: number,
+  limit = 8,
 ): Promise<{ address: string; amount: number; pct: number }[]> {
   const base = cfg.explorer.apiBase;
   if (!base) return [];
   const data = await safeJson<{ items?: BsHolder[] }>(`${base}/tokens/${address}/holders`);
   if (!data?.items?.length || totalSupply <= 0) return [];
-  return data.items.slice(0, 8).map((h) => {
+  return data.items.slice(0, limit).map((h) => {
     const addr = typeof h.address === "string" ? h.address : (h.address?.hash ?? "");
     const amount = num(h.value) / Math.pow(10, decimals);
     return { address: addr, amount, pct: (amount / totalSupply) * 100 };

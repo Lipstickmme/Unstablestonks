@@ -10,10 +10,17 @@ import { BundleWatch } from "@/components/terminal/BundleWatch";
 import { BridgePanel } from "@/components/terminal/BridgePanel";
 import { TokenIcon } from "@/components/terminal/TokenIcon";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
-import { useTokenDetail, useTokens, useTokenCandles, type ChartTimeframe } from "@/lib/data/hooks";
+import {
+  useTokenDetail,
+  useTokens,
+  useTokenCandles,
+  useTokenInsights,
+  type ChartTimeframe,
+} from "@/lib/data/hooks";
+import { BASE_BOT_URL } from "@/config/links";
 import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
-import { ArrowLeft, Copy, ExternalLink, Rocket, Users } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Copy, ExternalLink, Rocket, Send, Users } from "lucide-react";
 
 const TIMEFRAMES: { key: ChartTimeframe; label: string }[] = [
   { key: "minute", label: "1m" },
@@ -52,6 +59,9 @@ function TokenDetail() {
   const shareOfVoice = useShareOfVoice(address, peers);
 
   const token = data?.token;
+  // Distribution + listing intel for this one token, on the shared slow cycle.
+  const insightsQ = useTokenInsights(token ? [token] : undefined);
+  const insight = token ? insightsQ.data?.[token.address] : undefined;
   const positive = (token?.priceChange24h ?? 0) >= 0;
   const closes = candles.map((c) => c.c);
 
@@ -227,6 +237,38 @@ function TokenDetail() {
                       label="Price source"
                       value={<span className="num">{token.priceSource ?? "none"}</span>}
                     />
+                    <Field
+                      label="Dev holding"
+                      value={
+                        <span className="num">
+                          {insight?.devHoldingPct == null
+                            ? "—"
+                            : `${insight.devHoldingPct.toFixed(2)}%`}
+                        </span>
+                      }
+                    />
+                    <Field
+                      label="Top 10 holders"
+                      value={
+                        <span className="num">
+                          {insight?.top10Pct == null ? "—" : `${insight.top10Pct.toFixed(1)}%`}
+                        </span>
+                      }
+                    />
+                    <Field
+                      label="DEX paid"
+                      value={
+                        insight?.dexPaid == null ? (
+                          <span className="num text-muted-foreground">not indexed</span>
+                        ) : insight.dexPaid ? (
+                          <span className="inline-flex items-center gap-1 text-bull">
+                            <BadgeCheck className="h-3 w-3" /> paid
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">unpaid</span>
+                        )
+                      }
+                    />
                   </div>
                 </section>
 
@@ -275,6 +317,14 @@ function TokenDetail() {
 
               <div className="space-y-4">
                 <SwapPanel token={token} />
+                <a
+                  href={BASE_BOT_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center gap-2 rounded-xl border border-border bg-surface py-2.5 text-xs font-medium transition-colors hover:border-primary/50 hover:bg-surface-elevated"
+                >
+                  <Send className="h-3.5 w-3.5" /> Buy on BaseBot (Telegram)
+                </a>
                 <XSocialPanel
                   address={token.address}
                   symbol={token.symbol}

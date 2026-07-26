@@ -125,6 +125,7 @@ export function SwapPanel({
         tokenDecimals,
         minOut: quote.minOut,
         feeTier: quote.feeTier,
+        route: quote.route,
       });
       setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
       setStatus("Submitted. Track it on the explorer.");
@@ -265,6 +266,18 @@ export function SwapPanel({
                 </button>
               ))}
             </div>
+          }
+        />
+        <Row
+          label="Route"
+          value={
+            <span className="num">
+              {quote?.ok && quote.routeLabel
+                ? `${side === "buy" ? quote.routeLabel.replace(/[^→]+$/, token.symbol) : `${token.symbol}${quote.routeLabel.replace(/^[^→]+/, "")}`}${
+                    quote.feeTier ? ` · ${quote.feeTier / 10_000}%` : ""
+                  }`
+                : "—"}
+            </span>
           }
         />
         <Row

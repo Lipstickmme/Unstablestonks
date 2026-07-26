@@ -3,6 +3,8 @@ import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
+import type { TokenInsight } from "@/lib/data/hooks";
+import { BASE_BOT_URL } from "@/config/links";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
@@ -19,6 +21,8 @@ import {
   Boxes,
   Sparkles,
   Star,
+  BadgeCheck,
+  Send,
 } from "lucide-react";
 
 type SortKey =
@@ -126,6 +130,49 @@ function VenueCell({ t }: { t: TokenRow }) {
 }
 
 /** Per-row bundle read — same analysis as the panel, condensed to one cell. */
+/**
+ * A share-of-supply figure. Blank until the check has run — an unchecked token
+ * must not read as 0%. Turns amber past `warnAbove`, the point where the
+ * concentration is worth a second look.
+ */
+function SupplyPct({ pct, warnAbove }: { pct?: number; warnAbove: number }) {
+  if (pct == null) return <span className="text-[11px] text-muted-foreground">—</span>;
+  const hot = pct >= warnAbove;
+  return (
+    <span className={`num text-xs ${hot ? "text-warn" : "text-muted-foreground"}`}>
+      {pct < 0.01 ? "<0.01%" : `${pct.toFixed(pct < 10 ? 2 : 1)}%`}
+    </span>
+  );
+}
+
+/**
+ * DexScreener paid-listing state. `undefined` means the chain isn't indexed by
+ * DexScreener at all, which is not the same as "unpaid" — that shows as "—".
+ */
+function DexPaidCell({ paid }: { paid?: boolean }) {
+  if (paid == null)
+    return (
+      <span className="text-[11px] text-muted-foreground" title="Not indexed by DexScreener">
+        —
+      </span>
+    );
+  return paid ? (
+    <span
+      className="chip border-bull/40 bg-bull/10 !py-0 text-[9px] text-bull"
+      title="Enhanced token info paid for"
+    >
+      <BadgeCheck className="h-2.5 w-2.5" /> paid
+    </span>
+  ) : (
+    <span
+      className="chip !py-0 text-[9px] text-muted-foreground"
+      title="No approved DexScreener order"
+    >
+      unpaid
+    </span>
+  );
+}
+
 function BundleCell({ stats }: { stats?: BundleStats }) {
   if (!stats || stats.sample === 0) {
     return <span className="num text-xs text-muted-foreground">—</span>;
@@ -167,6 +214,7 @@ export function TokenTable({
   initialQuery,
   watchOnly,
   bundles,
+  insights,
 }: {
   tokens: TokenRow[];
   loading?: boolean;
@@ -175,6 +223,8 @@ export function TokenTable({
   watchOnly?: boolean;
   /** Per-token bundle stats, keyed by address. */
   bundles?: Record<string, BundleStats>;
+  /** Distribution + listing intel, keyed by token address. */
+  insights?: Record<string, TokenInsight>;
 }) {
   const { chain } = useChain();
   const wallet = useWallet();
@@ -296,6 +346,24 @@ export function TokenTable({
               <th className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                 Bundles
               </th>
+              <th
+                className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+                title="Deployer's current balance as a share of supply"
+              >
+                Dev
+              </th>
+              <th
+                className="px-2 py-2.5 text-right text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+                title="Combined share held by the ten largest holders"
+              >
+                Top 10
+              </th>
+              <th
+                className="px-2 py-2.5 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+                title="Whether the team paid DexScreener for enhanced token info"
+              >
+                DEX paid
+              </th>
               <th className="px-2 py-2.5">
                 <H k="graduationPct" label="Venue" />
               </th>
@@ -310,7 +378,7 @@ export function TokenTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={12} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={15} className="px-4 py-16 text-center text-sm text-muted-foreground">
                   {watchOnly
                     ? "Your watchlist is empty. Tap the ☆ on any token to add it."
                     : loading
@@ -407,6 +475,15 @@ export function TokenTable({
                 <td className="px-2 py-3 text-right">
                   <BundleCell stats={bundles?.[t.address]} />
                 </td>
+                <td className="px-2 py-3 text-right">
+                  <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
+                </td>
+                <td className="px-2 py-3 text-right">
+                  <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
+                </td>
+                <td className="px-2 py-3 text-center">
+                  <DexPaidCell paid={insights?.[t.address]?.dexPaid} />
+                </td>
                 <td className="px-2 py-3">
                   <VenueCell t={t} />
                 </td>
@@ -436,6 +513,16 @@ export function TokenTable({
                   >
                     <Zap className="h-3 w-3" /> Buy
                   </button>
+                  <a
+                    href={BASE_BOT_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Open BaseBot on Telegram"
+                    className="ml-1 inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                  >
+                    <Send className="h-3 w-3" /> BaseBot
+                  </a>
                 </td>
               </tr>
             ))}

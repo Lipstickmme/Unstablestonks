@@ -3,12 +3,14 @@ import { useChain } from "@/lib/chain-context";
 import type { ChainConfig, ChainKey } from "@/config/chains";
 import type { ChainStats, TokenRow, TradeEvent } from "../types";
 import {
+  fetchAddressCreator,
   fetchChainStats,
   fetchTokenDetail,
   fetchTokenHolders,
   fetchTokens,
   fetchTokenTransfers,
 } from "./blockscout";
+import { fetchDexPaid, type DexPaidStatus } from "./dexscreener";
 import {
   fetchNetworkPools,
   fetchOhlcvCandles,
@@ -18,7 +20,7 @@ import {
   fetchTokenPools,
   type Candle,
 } from "./geckoterminal";
-import { getErc20Meta, getRpcHealth } from "./rpc";
+import { getErc20Balance, getErc20Meta, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
 import { fetchExplorerStats } from "../explorer-stats";
 import { readCache, writeCache } from "../persist";
@@ -212,6 +214,82 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
           }),
         );
       }
+      return out;
+    },
+  });
+}
+
+export interface TokenInsight {
+  /** Deployer's balance as a % of supply. */
+  devHoldingPct?: number;
+  /** Combined share of the ten largest holders. */
+  top10Pct?: number;
+  /** DexScreener paid listing — undefined when the chain isn't indexed there. */
+  dexPaid?: boolean;
+}
+
+/**
+ * Distribution + listing intel for the busiest rows: how much the deployer still
+ * holds, how concentrated the top ten are, and whether the team paid DexScreener
+ * for enhanced token info.
+ *
+ * Dev holding is read straight off the chain — the creator address from the
+ * explorer, then a live `balanceOf` — rather than looked up in a top-N holders
+ * page, so a deployer sitting outside the top ten is still counted correctly.
+ * Runs on its own slow cycle over the top 8 rows so it never competes with the
+ * market data feed.
+ */
+export function useTokenInsights(tokens: TokenRow[] | undefined) {
+  const { chain, chainKey } = useChain();
+  const targets = (tokens ?? [])
+    .filter((t) => t.totalSupply && t.totalSupply > 0)
+    .sort((a, b) => b.vol24h - a.vol24h)
+    .slice(0, 8)
+    .map((t) => ({
+      address: t.address,
+      decimals: t.decimals ?? 18,
+      totalSupply: t.totalSupply as number,
+    }));
+  const key = targets.map((t) => t.address).join(",");
+
+  return useQuery<Record<string, TokenInsight>>({
+    queryKey: ["token-insights", chainKey, key],
+    enabled: targets.length > 0,
+    staleTime: 300_000,
+    refetchInterval: 300_000,
+    retry: 0,
+    queryFn: async () => {
+      const out: Record<string, TokenInsight> = {};
+      await Promise.all(
+        targets.map(async (t) => {
+          const [holders, creator, paid] = await Promise.all([
+            fetchTokenHolders(chain, t.address, t.decimals, t.totalSupply, 10).catch(() => []),
+            fetchAddressCreator(chain, t.address).catch(() => ""),
+            fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
+          ]);
+
+          const insight: TokenInsight = { dexPaid: paid.paid };
+
+          if (holders.length) {
+            const sum = holders.reduce((s, h) => s + h.pct, 0);
+            if (sum > 0) insight.top10Pct = Math.min(100, sum);
+          }
+
+          if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator)) {
+            const bal = await getErc20Balance(
+              chainKey,
+              t.address as `0x${string}`,
+              creator as `0x${string}`,
+              t.decimals,
+            ).catch(() => 0);
+            if (bal >= 0 && t.totalSupply > 0) {
+              insight.devHoldingPct = Math.min(100, (bal / t.totalSupply) * 100);
+            }
+          }
+
+          out[t.address] = insight;
+        }),
+      );
       return out;
     },
   });

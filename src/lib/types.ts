@@ -63,6 +63,12 @@ export interface TokenRow {
   curveTarget?: number;
   /** True when graduationPct is derived from liquidity rather than reported. */
   curveEstimated?: boolean;
+  /** Deployer's current balance as a % of supply. undefined = not checked yet. */
+  devHoldingPct?: number;
+  /** Combined share of the ten largest holders, as a % of supply. */
+  top10Pct?: number;
+  /** DexScreener paid listing: true/false when known, undefined when unindexed. */
+  dexPaid?: boolean;
 }
 
 export interface TradeEvent {
