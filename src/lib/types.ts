@@ -69,6 +69,8 @@ export interface TokenRow {
   top10Pct?: number;
   /** DexScreener paid listing: true/false when known, undefined when unindexed. */
   dexPaid?: boolean;
+  /** Deepest pool this token trades in — the handle we use to find its DEX factory. */
+  primaryPool?: string;
 }
 
 export interface TradeEvent {

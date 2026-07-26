@@ -310,6 +310,7 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
       // Deeper pool wins as the primary venue/pricing source.
       if (reserve > existing._reserve) {
         existing._reserve = reserve;
+        existing.primaryPool = a.address ?? existing.primaryPool;
         existing.price = price || existing.price;
         existing.dexName = dexName;
         existing.liquidityUsd = (existing.liquidityUsd ?? 0) + reserve;
@@ -330,6 +331,7 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
 
     byAddress.set(address, {
       _reserve: reserve,
+      primaryPool: a.address,
       _onCurve: isLaunchpad,
       _onDex: !isLaunchpad,
       address,

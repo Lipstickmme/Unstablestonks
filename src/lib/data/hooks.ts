@@ -142,12 +142,21 @@ export function useTokens() {
     initialData: () => readCache<TokenRow[]>(cacheKey),
     initialDataUpdatedAt: 0,
     queryFn: async () => {
-      const [gtRows, dsRows, bsRows, freshRows] = await Promise.all([
+      const [gtRows, dsRows, bsRows] = await Promise.all([
         fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
-        fetchNewLaunches(chainKey, chain).catch(() => [] as TokenRow[]),
       ]);
+
+      // The live pools tell the scanner which DEX factories this chain actually
+      // uses, so launches are found on whatever venue they happen on.
+      const poolHints = gtRows
+        .map((r) => r.primaryPool)
+        .filter((p): p is string => Boolean(p))
+        .slice(0, 8);
+      const freshRows = await fetchNewLaunches(chainKey, chain, poolHints).catch(
+        () => [] as TokenRow[],
+      );
 
       const merged = new Map<string, TokenRow>();
       // Order matters: the first source to introduce an address owns its market
