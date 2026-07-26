@@ -21,6 +21,8 @@ export function WalletButton() {
     wallets,
     activeWalletName,
     ensureChain,
+    pickerOpen,
+    clearPicker,
   } = useWallet();
   const { chain } = useChain();
   const [open, setOpen] = useState(false);
@@ -32,19 +34,36 @@ export function WalletButton() {
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A dialog asked for the picker. If there's exactly one wallet there is
+  // nothing to choose, so connect straight away instead of showing a
+  // one-item menu.
+  useEffect(() => {
+    if (!pickerOpen || address) return;
+    clearPicker();
+    if (wallets.length === 1) void handleConnect(wallets[0]);
+    else setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerOpen, address]);
 
   // Surface connection errors so failures are never silent.
   useEffect(() => {
     if (error) toast.error(error);
   }, [error]);
 
-  async function handleConnect(w?: DiscoveredWallet) {
+  const close = () => {
     setOpen(false);
+    clearPicker();
+  };
+
+  async function handleConnect(w?: DiscoveredWallet) {
+    close();
     const addr = await connect(w);
     if (addr) {
       toast.success(`Connected ${shortAddr(addr)}`);
@@ -105,7 +124,7 @@ export function WalletButton() {
 
   const trigger = (
     <button
-      onClick={() => (needsPicker ? setOpen((o) => !o) : handleConnect(wallets[0]))}
+      onClick={() => (needsPicker ? (open ? close() : setOpen(true)) : handleConnect(wallets[0]))}
       disabled={connecting}
       className="flex items-center gap-2 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
     >
@@ -146,7 +165,7 @@ export function WalletButton() {
                 <a
                   key={l.name}
                   href={l.href}
-                  onClick={() => setOpen(false)}
+                  onClick={close}
                   className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
                 >
                   {l.name}
@@ -165,7 +184,7 @@ export function WalletButton() {
                   href={l.href}
                   target="_blank"
                   rel="noreferrer"
-                  onClick={() => setOpen(false)}
+                  onClick={close}
                   className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-elevated"
                 >
                   {l.name}

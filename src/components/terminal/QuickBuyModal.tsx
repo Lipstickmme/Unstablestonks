@@ -6,10 +6,11 @@ import type { TokenRow } from "@/lib/types";
 import { SwapPanel } from "./SwapPanel";
 
 /**
- * Quick-buy dialog opened from the table's Buy button — no navigation. The wallet
- * connection is triggered by the Buy click itself (a real user gesture, handled
- * in the caller); connecting from an effect here would make wallets reject the
- * request. The swap panel's primary button also connects if still disconnected.
+ * Quick-buy dialog opened from the table's Buy button — no navigation.
+ *
+ * It never connects a wallet itself. If the panel needs one it closes this
+ * dialog and opens the header's wallet picker, so there is exactly one connect
+ * flow in the app rather than a second one competing from inside a portal.
  */
 export function QuickBuyModal({ token, onClose }: { token: TokenRow; onClose: () => void }) {
   // Close on Escape, and lock background scroll while open.
@@ -67,7 +68,7 @@ export function QuickBuyModal({ token, onClose }: { token: TokenRow; onClose: ()
           </button>
         </div>
         <div className="p-3">
-          <SwapPanel token={token} defaultSide="buy" />
+          <SwapPanel token={token} defaultSide="buy" onNeedsWallet={onClose} />
         </div>
       </div>
     </div>,

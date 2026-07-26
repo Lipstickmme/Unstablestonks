@@ -22,7 +22,14 @@ import { bridgeViaCctp, usdcAddress } from "@/lib/cctp";
  * `bare` drops the card chrome and heading so the panel can sit inside the
  * header's bridge dialog, which supplies its own.
  */
-export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
+export function BridgePanel({
+  bare = false,
+  onNeedsWallet,
+}: {
+  bare?: boolean;
+  /** See SwapPanel — hands connecting back to the header button. */
+  onNeedsWallet?: () => void;
+} = {}) {
   const { chain, chainKey } = useChain();
   const wallet = useWallet();
 
@@ -95,14 +102,11 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
   async function onBridge() {
     setStatus(null);
     setTxHash(null);
-    let account = wallet.address;
+    const account = wallet.address;
     if (!account) {
-      const addr = await wallet.connect();
-      if (!addr) {
-        setStatus(wallet.error ?? "Connect your wallet to continue.");
-        return;
-      }
-      account = addr;
+      onNeedsWallet?.();
+      wallet.requestPicker();
+      return;
     }
     // The route starts on the SOURCE chain, so the wallet must be there. This
     // re-reads chainId after any connect above rather than a stale render value.

@@ -49,7 +49,7 @@ export function BridgeModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="p-3">
-          <BridgePanel bare />
+          <BridgePanel bare onNeedsWallet={onClose} />
         </div>
       </div>
     </div>,

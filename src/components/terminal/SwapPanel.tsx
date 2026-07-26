@@ -32,9 +32,16 @@ function presetAmount(balance: number, pct: number): string {
 export function SwapPanel({
   token,
   defaultSide = "buy",
+  onNeedsWallet,
 }: {
   token: TokenRow;
   defaultSide?: "buy" | "sell";
+  /**
+   * Called when the panel needs a wallet and doesn't have one. Dialogs pass
+   * their close handler so the popup gets out of the way and the header's
+   * picker takes over.
+   */
+  onNeedsWallet?: () => void;
 }) {
   const { chain, chainKey } = useChain();
   const wallet = useWallet();
@@ -107,33 +114,23 @@ export function SwapPanel({
   async function onAction() {
     setStatus(null);
     setTxHash(null);
-    // The address this run uses. wallet.address is state and won't have
-    // re-rendered yet when we connect inside this same handler.
-    let account = wallet.address;
-    if (!wallet.address) {
-      // Await it: the table's Buy button may already have a request in flight,
-      // and connect() now hands back that same promise instead of dropping the
-      // click. On success we carry straight on rather than making the user
-      // press the button a second time.
-      const addr = await wallet.connect();
-      if (!addr) {
-        setStatus(wallet.error ?? "Connect your wallet to continue.");
-        return;
-      }
-      account = addr;
+    const account = wallet.address;
+    if (!account) {
+      // Don't run a second connect flow from in here. Connecting has one home —
+      // the header button, which already knows about every discovered wallet and
+      // the mobile deep links. Close whatever dialog we're in and point there.
+      onNeedsWallet?.();
+      wallet.requestPicker();
+      return;
     }
-    // Re-read the chain rather than trusting `wrongChain`: if we connected a
-    // moment ago inside this handler, that value was computed from a render
-    // where no wallet existed and still says "right chain".
     if (wallet.chainId !== chain.id) {
       const ok = await wallet.ensureChain(chain);
       if (!ok) {
         setStatus(`Switch your wallet to ${chain.name} to continue.`);
         return;
       }
-      // Previously this returned unconditionally, so a successful network
-      // switch still swallowed the click and the trade only went through on a
-      // second press. Fall through and execute.
+      // Fall through on success: returning here made a successful network
+      // switch swallow the click, so the trade needed a second press.
     }
     if (!enabled) return;
     if (!quote?.ok) {

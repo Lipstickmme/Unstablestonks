@@ -8,7 +8,6 @@ import { BASE_BOT_URL } from "@/config/links";
 import { venueLogo } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
 import { useChain } from "@/lib/chain-context";
-import { useWallet } from "@/lib/wallet";
 import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
 import { TokenIcon } from "./TokenIcon";
@@ -271,7 +270,6 @@ export function TokenTable({
   insights?: Record<string, TokenInsight>;
 }) {
   const { chain } = useChain();
-  const wallet = useWallet();
   const watchlist = useWatchlist();
   const [sort, setSort] = useState<SortKey>("vol24h");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
@@ -616,10 +614,10 @@ export function TokenTable({
                   <div className="flex items-center justify-end gap-1">
                     <button
                       onClick={() => {
-                        // Kick off the wallet prompt from this real click (a user
-                        // gesture) so the wallet doesn't reject it, then open the
-                        // buy modal. No navigation to the token page.
-                        if (!wallet.address) void wallet.connect();
+                        // Just open the dialog. Firing a speculative connect()
+                        // here raced the dialog's own click: the wallet prompt
+                        // opened behind the modal and the second request was
+                        // swallowed as a duplicate.
                         setBuyToken(t);
                       }}
                       className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"

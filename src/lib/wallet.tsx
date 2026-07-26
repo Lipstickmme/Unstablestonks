@@ -56,6 +56,14 @@ interface WalletState {
   wallets: DiscoveredWallet[];
   /** Name of the connected wallet, when known. */
   activeWalletName: string | null;
+  /**
+   * True when something asked the header's wallet picker to open. Dialogs set it
+   * instead of running their own connect: one connect path, in one place, with
+   * the full wallet list and mobile deep links behind it.
+   */
+  pickerOpen: boolean;
+  requestPicker: () => void;
+  clearPicker: () => void;
   /** Connect. Pass a specific wallet from `wallets`, else the default is used. */
   connect: (wallet?: DiscoveredWallet) => Promise<`0x${string}` | null>;
   disconnect: () => void;
@@ -205,6 +213,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // that opens has its own Connect button — with a boolean guard that second
   // click returned null and did nothing at all, with no error shown.
   const connectingRef = useRef<Promise<`0x${string}` | null> | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const connect = useCallback(
     async (wallet?: DiscoveredWallet): Promise<`0x${string}` | null> => {
@@ -344,6 +353,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       hasProvider: wallets.length > 0 || Boolean(windowProvider()),
       wallets,
       activeWalletName: active?.info.name ?? null,
+      pickerOpen,
+      requestPicker: () => setPickerOpen(true),
+      clearPicker: () => setPickerOpen(false),
       connect,
       disconnect,
       ensureChain,
@@ -357,6 +369,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       error,
       wallets,
       active,
+      pickerOpen,
       connect,
       disconnect,
       ensureChain,
