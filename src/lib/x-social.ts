@@ -9,12 +9,16 @@ import { proxiedFetchText } from "./net";
 // CORS and use a secret API key when one is configured.
 //
 // Provider priority (all REAL sources — no fabricated posts):
-//   1. Official X API v2 recent search — set X_BEARER_TOKEN. Authoritative, gives
-//      true impression_count + engagement. Best signal.
-//   2. Nitter search RSS — key-less fallback. Set X_NITTER_INSTANCES (comma list)
-//      or rely on the built-in instances. Gives real posts; engagement unknown.
-//   3. If nothing is reachable we return an empty, clearly-labelled result. The UI
-//      shows "no signal / source unavailable" rather than inventing tweets.
+//   1. Official X API v2 recent search, when a bearer token is set. Authoritative:
+//      true impression_count + engagement. Several env names are accepted, since
+//      a mis-named secret is indistinguishable from an outage. This is the ONLY
+//      source that can report reach — everything below counts posts.
+//   2. An open crawl of public search engines scoped to x.com, and Nitter search
+//      RSS, RACED against each other. Chaining them was the bug: exhausting
+//      Nitter's seven mostly-dead mirrors ate the whole budget before the crawl
+//      ever ran, so the panel always reported a timeout.
+//   3. Nothing reachable → an empty, clearly-labelled result. The UI says "no
+//      signal" rather than inventing tweets or a score.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface XPost {
@@ -155,12 +159,17 @@ function decodeEntities(s: string): string {
 }
 
 async function viaNitter(query: string, instances: string[]): Promise<XSocialResult | null> {
-  for (const base of instances) {
+  // Three mirrors, two hops each: most public Nitter instances are long dead,
+  // and exhausting the list is what used to burn the entire crawl budget.
+  for (const base of instances.slice(0, 3)) {
     try {
-      // Origin first, then CORS/edge proxies (api.cors.lol, proxy.cors.sh, r.jina.ai).
       const xml = await proxiedFetchText(
         `${base}/search/rss?f=tweets&q=${encodeURIComponent(query)}`,
-        { timeoutMs: 9_000, headers: { Accept: "application/rss+xml, application/xml, text/xml" } },
+        {
+          timeoutMs: 5_000,
+          hops: 2,
+          headers: { Accept: "application/rss+xml, application/xml, text/xml" },
+        },
       );
       if (!xml) continue;
       const items = xml.split(/<item>/).slice(1);
@@ -266,7 +275,7 @@ async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
   const found = new Map<string, XPost>();
 
   for (const url of sources) {
-    const text = await proxiedFetchText(url, { timeoutMs: 9_000 });
+    const text = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 2 });
     if (!text || text.length < 200) continue;
 
     for (const m of text.matchAll(
@@ -307,8 +316,49 @@ async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
   };
 }
 
+/**
+ * Bearer token for the official X API. Several names are accepted because the
+ * deploy secret is just as likely to be called TWITTER_BEARER_TOKEN or
+ * X_API_BEARER_TOKEN, and a name mismatch looks exactly like "the API is down".
+ */
+function bearerToken(): string | undefined {
+  for (const name of [
+    "X_BEARER_TOKEN",
+    "TWITTER_BEARER_TOKEN",
+    "X_API_BEARER_TOKEN",
+    "X_API_KEY",
+    "TWITTER_API_KEY",
+  ]) {
+    const v = serverEnv(name);
+    if (v) return v;
+  }
+  return undefined;
+}
+
+/** Resolve to the first source that returns real data; null when all fail. */
+function firstOk<T>(promises: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    if (!pending) {
+      resolve(null);
+      return;
+    }
+    for (const p of promises) {
+      p.then(
+        (v) => {
+          if (v) resolve(v);
+          else if (--pending === 0) resolve(null);
+        },
+        () => {
+          if (--pending === 0) resolve(null);
+        },
+      );
+    }
+  });
+}
+
 async function crawlOne(query: string): Promise<XSocialResult> {
-  const bearer = serverEnv("X_BEARER_TOKEN");
+  const bearer = bearerToken();
   if (bearer) {
     const r = await viaXApi(query, bearer);
     if (r) return r;
@@ -319,12 +369,12 @@ async function crawlOne(query: string): Promise<XSocialResult> {
       ?.split(",")
       .map((s) => s.trim())
       .filter(Boolean) ?? DEFAULT_NITTER;
-  const nitter = await viaNitter(query, instances);
-  if (nitter) return nitter;
 
-  // Every mirror rate-limited/down → count mentions via an open crawl.
-  const crawled = await viaOpenCrawl(query);
-  if (crawled) return crawled;
+  // Raced, not chained. Walking Nitter's mirrors first — seven instances, each
+  // through six fetch hops — consumed the whole deadline before the open crawl
+  // ever ran, which is why the panel reported "timed out" instead of a result.
+  const found = await firstOk([viaOpenCrawl(query), viaNitter(query, instances)]);
+  if (found) return found;
 
   return {
     query,
@@ -337,8 +387,8 @@ async function crawlOne(query: string): Promise<XSocialResult> {
     source: "unavailable",
     ok: false,
     note: bearer
-      ? "No recent posts found."
-      : "X crawl source unreachable. Set X_BEARER_TOKEN (official API) or a reachable X_NITTER_INSTANCES for live social data.",
+      ? "No recent posts found for this contract."
+      : "No X posts found for this contract, and no bearer token is set. Add X_BEARER_TOKEN for authoritative reach data.",
   };
 }
 
@@ -367,7 +417,7 @@ function withDeadline(query: string, ms: number): Promise<XSocialResult> {
           heat: 0,
           source: "unavailable",
           ok: false,
-          note: "X crawl timed out. Set X_BEARER_TOKEN for reliable, authoritative data.",
+          note: "X sources didn't respond in time. Set X_BEARER_TOKEN for reliable, authoritative data.",
         }),
       ms,
     );
@@ -384,7 +434,7 @@ function withDeadline(query: string, ms: number): Promise<XSocialResult> {
 async function crawlCached(query: string): Promise<XSocialResult> {
   const hit = crawlCache.get(query);
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
-  const result = await withDeadline(query, 13_000);
+  const result = await withDeadline(query, 22_000);
   // Only cache successful crawls — let failures retry sooner.
   if (result.ok) crawlCache.set(query, { ts: Date.now(), result });
   return result;

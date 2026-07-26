@@ -95,11 +95,17 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
   async function onBridge() {
     setStatus(null);
     setTxHash(null);
-    if (!wallet.address) {
-      wallet.connect();
-      return;
+    let account = wallet.address;
+    if (!account) {
+      const addr = await wallet.connect();
+      if (!addr) {
+        setStatus(wallet.error ?? "Connect your wallet to continue.");
+        return;
+      }
+      account = addr;
     }
-    // The route starts on the SOURCE chain, so the wallet must be there.
+    // The route starts on the SOURCE chain, so the wallet must be there. This
+    // re-reads chainId after any connect above rather than a stale render value.
     if (wallet.chainId !== src.id) {
       const ok = await wallet.ensureChain(src);
       if (!ok) {
@@ -123,7 +129,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
           from: { key: from, cfg: src },
           to: { key: chainKey, cfg: chain },
           amount: parseUnits(amount, usdcDecimals),
-          account: wallet.address,
+          account,
           sourceWallet: client,
           destinationWallet: async () => {
             const ok = await wallet.ensureChain(chain);
@@ -140,7 +146,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
         const hash = await executeBridge({
           quote,
           walletClient: client,
-          account: wallet.address,
+          account,
           from,
           onProgress: (p) => setStatus(p.message),
         });
@@ -248,6 +254,9 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
         {label}
       </button>
 
+      {!status && wallet.error && (
+        <p className="mt-2 text-center text-[11px] text-bear">{wallet.error}</p>
+      )}
       {status && (
         <p className="mt-2 text-center text-[11px] text-muted-foreground">
           {status}

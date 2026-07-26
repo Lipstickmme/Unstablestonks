@@ -90,10 +90,20 @@ export async function proxiedFetchJson<T>(
 
 export async function proxiedFetchText(
   url: string,
-  opts: { timeoutMs?: number; headers?: Record<string, string> } = {},
+  opts: {
+    timeoutMs?: number;
+    headers?: Record<string, string>;
+    /**
+     * How many proxy fallbacks to try after the origin. Every hop costs a full
+     * timeout, so a caller working against a deadline (the X crawl) can cap the
+     * worst case instead of walking all five.
+     */
+    hops?: number;
+  } = {},
 ): Promise<string | null> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const targets = [url, ...PROXIES.map((p) => p(url))];
+  const proxies = opts.hops == null ? PROXIES : PROXIES.slice(0, Math.max(0, opts.hops));
+  const targets = [url, ...proxies.map((p) => p(url))];
   for (const target of targets) {
     const res = await fetchWithTimeout(target, timeoutMs, opts.headers);
     if (!res || !res.ok) continue;

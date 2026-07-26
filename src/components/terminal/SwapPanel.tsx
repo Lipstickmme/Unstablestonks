@@ -108,11 +108,25 @@ export function SwapPanel({
   async function onAction() {
     setStatus(null);
     setTxHash(null);
+    // The address this run uses. wallet.address is state and won't have
+    // re-rendered yet when we connect inside this same handler.
+    let account = wallet.address;
     if (!wallet.address) {
-      wallet.connect();
-      return;
+      // Await it: the table's Buy button may already have a request in flight,
+      // and connect() now hands back that same promise instead of dropping the
+      // click. On success we carry straight on rather than making the user
+      // press the button a second time.
+      const addr = await wallet.connect();
+      if (!addr) {
+        setStatus(wallet.error ?? "Connect your wallet to continue.");
+        return;
+      }
+      account = addr;
     }
-    if (wrongChain) {
+    // Re-read the chain rather than trusting `wrongChain`: if we connected a
+    // moment ago inside this handler, that value was computed from a render
+    // where no wallet existed and still says "right chain".
+    if (wallet.chainId !== chain.id) {
       const ok = await wallet.ensureChain(chain);
       if (!ok) {
         setStatus(`Switch your wallet to ${chain.name} to continue.`);
@@ -138,7 +152,7 @@ export function SwapPanel({
       const res = await executeSwap({
         chainKey,
         walletClient: client,
-        account: wallet.address,
+        account: account as `0x${string}`,
         side,
         amountIn: amtNum,
         token: tokenAddr,
@@ -339,6 +353,9 @@ export function SwapPanel({
         {actionLabel}
       </button>
 
+      {!status && wallet.error && (
+        <p className="mt-2 text-center text-[11px] text-bear">{wallet.error}</p>
+      )}
       {status && (
         <p className="mt-2 text-center text-[11px] text-muted-foreground">
           {status}

@@ -199,7 +199,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     };
   }, [resolveProvider]);
 
-  const connectingRef = useRef(false);
+  // The in-flight connect, not a boolean. A second caller must be able to await
+  // the SAME request rather than be dropped: the table's Buy button fires
+  // connect() to keep the wallet prompt inside a user gesture, then the modal
+  // that opens has its own Connect button — with a boolean guard that second
+  // click returned null and did nothing at all, with no error shown.
+  const connectingRef = useRef<Promise<`0x${string}` | null> | null>(null);
 
   const connect = useCallback(
     async (wallet?: DiscoveredWallet): Promise<`0x${string}` | null> => {
@@ -210,9 +215,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         );
         return null;
       }
-      // Guard against overlapping requests — a second eth_requestAccounts while
-      // one is pending is what makes wallets throw a spurious rejection.
-      if (connectingRef.current) return null;
+      // Overlapping eth_requestAccounts makes wallets throw a spurious
+      // rejection, so callers share one request instead of racing.
+      if (connectingRef.current) return connectingRef.current;
 
       // A manual connect clears any prior "disconnected" suppression.
       writeStore(DISCONNECTED_KEY, null);
@@ -236,33 +241,38 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         /* fall through to request */
       }
 
-      connectingRef.current = true;
       setConnecting(true);
       setError(null);
-      try {
-        const accts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
-        const addr = (accts[0] as `0x${string}`) ?? null;
-        setAddress(addr);
-        const id = (await provider.request({ method: "eth_chainId" })) as string;
-        setChainId(parseInt(id, 16));
-        remember(wallet);
-        return addr;
-      } catch (e) {
-        const code = (e as { code?: number })?.code;
-        setError(
-          code === 4001
-            ? "Connection request rejected — approve it in your wallet to continue."
-            : code === -32002
-              ? "A connection request is already open — check your wallet extension/app."
-              : e instanceof Error
-                ? e.message
-                : "Failed to connect wallet.",
-        );
-        return null;
-      } finally {
-        connectingRef.current = false;
-        setConnecting(false);
-      }
+
+      const run = async (): Promise<`0x${string}` | null> => {
+        try {
+          const accts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
+          const addr = (accts[0] as `0x${string}`) ?? null;
+          setAddress(addr);
+          const id = (await provider.request({ method: "eth_chainId" })) as string;
+          setChainId(parseInt(id, 16));
+          remember(wallet);
+          return addr;
+        } catch (e) {
+          const code = (e as { code?: number })?.code;
+          setError(
+            code === 4001
+              ? "Connection request rejected — approve it in your wallet to continue."
+              : code === -32002
+                ? "A connection request is already open — check your wallet extension or app."
+                : e instanceof Error
+                  ? e.message
+                  : "Failed to connect wallet.",
+          );
+          return null;
+        } finally {
+          connectingRef.current = null;
+          setConnecting(false);
+        }
+      };
+
+      connectingRef.current = run();
+      return connectingRef.current;
     },
     [resolveProvider, wallets],
   );
