@@ -1,17 +1,43 @@
 import { useMemo } from "react";
-import { Boxes, AlertTriangle } from "lucide-react";
-import { formatUSD } from "@/lib/format";
-import type { TradeEvent } from "@/lib/types";
-import { analyzeBundles } from "@/lib/bundles";
+import { Link } from "@tanstack/react-router";
+import { Boxes, AlertTriangle, Copy } from "lucide-react";
+import { formatUSD, shortAddr } from "@/lib/format";
+import type { TradeEvent, TokenRow } from "@/lib/types";
+import { analyzeBundles, analyzeBundlesByToken } from "@/lib/bundles";
 
 /**
- * Bundle detection from the real trades feed. Trades that land in the same block
- * (same block timestamp) as multiple others are almost certainly a coordinated
- * bundle (sniper/MEV/launch bundle). We group by second and flag clusters ≥ 3.
+ * Bundle detection from the real trades feed. Swaps landing in the same block as
+ * several others are almost certainly coordinated (sniper/MEV/launch bundle).
+ *
+ * On the terminal this lists the actual launches carrying bundles — newest
+ * first, with each token's CA — rather than only chain-wide statistics.
  */
-export function BundleWatch({ trades }: { trades: TradeEvent[] }) {
-  // Same analyzer the terminal list uses, so panel and rows always agree.
+export function BundleWatch({ trades, tokens }: { trades: TradeEvent[]; tokens?: TokenRow[] }) {
   const stats = useMemo(() => analyzeBundles(trades), [trades]);
+  const perToken = useMemo(() => analyzeBundlesByToken(trades), [trades]);
+
+  // Tokens that actually have bundles, newest launch first.
+  const flagged = useMemo(() => {
+    const byAddr = new Map((tokens ?? []).map((t) => [t.address, t]));
+    return Object.entries(perToken)
+      .filter(([, s]) => s.count > 0)
+      .map(([address, s]) => {
+        const token = byAddr.get(address);
+        return {
+          address,
+          stats: s,
+          symbol: token?.symbol ?? shortAddr(address),
+          ageMinutes: token?.ageMinutes ?? -1,
+        };
+      })
+      .sort((a, b) => {
+        // Newest launches first; unknown ages fall to the bottom.
+        const aAge = a.ageMinutes < 0 ? Number.MAX_SAFE_INTEGER : a.ageMinutes;
+        const bAge = b.ageMinutes < 0 ? Number.MAX_SAFE_INTEGER : b.ageMinutes;
+        return aAge - bAge;
+      })
+      .slice(0, 6);
+  }, [perToken, tokens]);
 
   const risk = stats.risk === "none" ? "low" : stats.risk;
   const riskCls = risk === "high" ? "text-bear" : risk === "elevated" ? "text-warn" : "text-bull";
@@ -49,11 +75,54 @@ export function BundleWatch({ trades }: { trades: TradeEvent[] }) {
               <div className="text-[10px] text-muted-foreground">largest cluster</div>
             </div>
           </div>
-          <div className="mt-2 text-[10px] text-muted-foreground">
-            {stats.count > 0
-              ? `${formatUSD(stats.bundledUsd)} traded in same-block clusters across the last ${stats.sample} swaps.`
-              : `No same-block clusters in the last ${stats.sample} swaps.`}
-          </div>
+
+          {/* The launches actually carrying bundles, newest first. */}
+          {flagged.length > 0 ? (
+            <ul className="mt-3 space-y-1.5">
+              {flagged.map((f) => (
+                <li key={f.address} className="flex items-center gap-2 text-xs">
+                  <Link
+                    to="/token/$address"
+                    params={{ address: f.address }}
+                    className="font-medium hover:text-primary"
+                  >
+                    {f.symbol}
+                  </Link>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(f.address)}
+                    title="Copy contract address"
+                    className="num inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    {shortAddr(f.address)}
+                    <Copy className="h-2.5 w-2.5" />
+                  </button>
+                  <span
+                    className={`num ml-auto text-[11px] font-medium ${
+                      f.stats.risk === "high"
+                        ? "text-bear"
+                        : f.stats.risk === "elevated"
+                          ? "text-warn"
+                          : "text-muted-foreground"
+                    }`}
+                    title={`${f.stats.count} cluster(s), largest ${f.stats.largest} swaps`}
+                  >
+                    {f.stats.pct.toFixed(0)}% · {f.stats.count}x
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="mt-2 text-[10px] text-muted-foreground">
+              No same-block clusters in the last {stats.sample} swaps.
+            </div>
+          )}
+
+          {flagged.length > 0 && (
+            <div className="mt-2 text-[10px] text-muted-foreground">
+              {formatUSD(stats.bundledUsd)} traded in same-block clusters across the last{" "}
+              {stats.sample} swaps.
+            </div>
+          )}
         </>
       )}
     </section>
