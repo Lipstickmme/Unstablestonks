@@ -226,6 +226,13 @@ const RESERVED_HANDLES = new Set([
   "signup",
 ]);
 
+/**
+ * How far from a status link the contract address must appear for the link to
+ * count as a post about it. One search result — snippet, title and URL — sits
+ * comfortably inside this.
+ */
+const PROXIMITY = 1500;
+
 /** X's snowflake epoch — post IDs carry their own creation timestamp. */
 const X_EPOCH = 1_288_834_974_657;
 
@@ -274,9 +281,12 @@ async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
   // id → post. Keyed by status id so the same post seen on two engines counts once.
   const found = new Map<string, XPost>();
 
+  const needle = query.toLowerCase();
+
   for (const url of sources) {
     const text = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 2 });
     if (!text || text.length < 200) continue;
+    const haystack = text.toLowerCase();
 
     for (const m of text.matchAll(
       /(?:x|twitter|nitter[\w.-]*)\.com\/([A-Za-z0-9_]{2,15})\/status(?:es)?\/(\d{15,25})/gi,
@@ -287,6 +297,16 @@ async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
       if (found.has(id)) continue;
       const ts = tsFromStatusId(id);
       if (ts == null) continue;
+
+      // The link must sit in a result block that actually mentions the contract.
+      // Search pages carry a handful of x.com/<handle>/status/<id> links that
+      // have nothing to do with the query — nav, promos, "people also viewed" —
+      // and counting one of those gave EVERY token exactly one mention and one
+      // account, which is the constant 14 heat score.
+      const at = m.index ?? 0;
+      const window = haystack.slice(Math.max(0, at - PROXIMITY), at + PROXIMITY);
+      if (!window.includes(needle)) continue;
+
       found.set(id, {
         handle: `@${handle}`,
         text: "",
@@ -393,7 +413,10 @@ async function crawlOne(query: string): Promise<XSocialResult> {
 }
 
 // Server-side result cache so dashboard refreshes don't hammer X/Nitter.
-const CACHE_TTL_MS = 120_000;
+// Results are held long enough that a rotating scan keeps the whole list warm:
+// a token crawled ten minutes ago still has a real score while the rotation
+// works through the rest.
+const CACHE_TTL_MS = 10 * 60_000;
 const crawlCache = new Map<string, { ts: number; result: XSocialResult }>();
 
 /** Hard ceiling so a slow/unreachable X source can never hang the UI card. */
@@ -452,9 +475,11 @@ export const searchXSocial = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<XSocialResult> => crawlCached(data.query));
 
 /**
- * Batch crawl for the dashboard: heat for up to 4 contract addresses. Runs in
+ * Batch crawl for the dashboard: heat for up to 8 contract addresses. Runs in
  * parallel (each with its own deadline + cache) so the card resolves quickly
- * instead of stacking timeouts sequentially.
+ * instead of stacking timeouts sequentially. The caller rotates through the
+ * list, so every token gets scored over a few cycles rather than only the top
+ * few being crawled forever.
  */
 export const searchXSocialBatch = createServerFn({ method: "GET" })
   .validator((raw: unknown): { queries: string[] } => {
@@ -462,7 +487,7 @@ export const searchXSocialBatch = createServerFn({ method: "GET" })
     const queries = (Array.isArray(q) ? q : [])
       .map((v) => String(v ?? "").trim())
       .filter((v) => v.length > 0)
-      .slice(0, 4);
+      .slice(0, 8);
     if (!queries.length) throw new Error("queries required");
     return { queries };
   })

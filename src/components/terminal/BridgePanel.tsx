@@ -276,9 +276,7 @@ export function BridgePanel({ bare = false }: { bare?: boolean } = {}) {
         <p className="mt-2 text-center text-[11px] text-muted-foreground">{railNote}</p>
       )}
       <p className="mt-2 text-center text-[10px] text-muted-foreground">
-        Non-custodial ·{" "}
-        {rail === "cctp" ? "native USDC burned and minted by Circle" : "settled by Relay"} · funds
-        go straight to your wallet.
+        Funds go straight to your wallet.
       </p>
     </section>
   );

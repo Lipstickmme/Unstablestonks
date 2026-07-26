@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { searchXSocial, searchXSocialBatch, type XSocialResult } from "@/lib/x-social";
 
@@ -48,4 +49,69 @@ export function useShareOfVoice(address: string | undefined, peers: string[]) {
   if (total <= 0) return null;
   const mine = data[address.toLowerCase()]?.mentions ?? 0;
   return (mine / total) * 100;
+}
+
+/** How many contracts one rotation crawls, and how often it advances. */
+const ROTATION_SIZE = 8;
+const ROTATION_MS = 45_000;
+
+/**
+ * Social heat for EVERY token on screen, not just the first handful.
+ *
+ * Crawling a hundred contracts at once would blow through every rate limit, so
+ * the scan rotates: each pass takes the next slice of addresses, and results
+ * accumulate into one map that persists across passes. After a few cycles the
+ * whole list carries a real score, and each token is re-crawled on its way back
+ * round. Addresses that have never been scored are always taken first, so a
+ * newly listed token doesn't wait a full lap.
+ */
+export function useRotatingXHeat(addresses: string[]): Record<string, XSocialResult> {
+  const [scores, setScores] = useState<Record<string, XSocialResult>>({});
+  const cursor = useRef(0);
+  const key = addresses.join(",");
+
+  useEffect(() => {
+    if (!addresses.length) return;
+    let cancelled = false;
+
+    const runPass = async () => {
+      const scored = new Set(Object.keys(scores));
+      const unscored = addresses.filter((a) => !scored.has(a));
+      // Unscored first; otherwise continue round the list from where we stopped.
+      const batch = unscored.length
+        ? unscored.slice(0, ROTATION_SIZE)
+        : Array.from({ length: Math.min(ROTATION_SIZE, addresses.length) }, (_, i) => {
+            return addresses[(cursor.current + i) % addresses.length];
+          });
+      if (!unscored.length) cursor.current = (cursor.current + ROTATION_SIZE) % addresses.length;
+
+      try {
+        const res = await searchXSocialBatch({ data: { queries: batch } });
+        if (cancelled) return;
+        setScores((prev) => {
+          const next = { ...prev };
+          for (const [addr, result] of Object.entries(res)) {
+            // Keep the last real reading rather than replacing it with a miss:
+            // one unreachable pass shouldn't blank a score the UI already shows.
+            if (result?.ok || !next[addr]) next[addr] = result;
+          }
+          return next;
+        });
+      } catch {
+        /* leave prior scores in place */
+      }
+    };
+
+    void runPass();
+    const id = setInterval(runPass, ROTATION_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // `key` stands in for the address list; `scores` is read inside but must not
+    // restart the timer on every merge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return scores;
 }

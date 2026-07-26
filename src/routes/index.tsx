@@ -16,7 +16,7 @@ import {
   applyDyor,
 } from "@/lib/data/hooks";
 import { analyzeBundlesByToken } from "@/lib/bundles";
-import { useXSocialHeatMap } from "@/lib/data/social";
+import { useRotatingXHeat } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
 
@@ -55,27 +55,20 @@ function Terminal() {
   const tokensQ = useTokens();
 
   // Crawl X for the CAs of the top tokens by 24h volume; merge heat into rows.
-  const topAddresses = useMemo(
-    () =>
-      (tokensQ.data ?? [])
-        .filter((t) => t.vol24h > 0)
-        .slice(0, 5)
-        .map((t) => t.address),
-    [tokensQ.data],
-  );
-  const heatQ = useXSocialHeatMap(topAddresses);
+  const topAddresses = useMemo(() => (tokensQ.data ?? []).map((t) => t.address), [tokensQ.data]);
+  // Every token on the list gets crawled, a slice at a time (see the hook).
+  const heat = useRotatingXHeat(topAddresses);
   const enrichQ = useRowEnrichment(tokensQ.data);
   const insightsQ = useTokenInsights(tokensQ.data);
   const dyorQ = useDyorTokens();
 
   const tokens = useMemo(() => {
     const rows = tokensQ.data ?? [];
-    const heat = heatQ.data;
     const enrich = enrichQ.data;
     const dyor = dyorQ.data;
-    if (!heat && !enrich && !dyor) return rows;
+    if (!Object.keys(heat).length && !enrich && !dyor) return rows;
     return rows.map((t) => {
-      const h = heat?.[t.address];
+      const h = heat[t.address];
       const e = enrich?.[t.address];
       const next = { ...t };
       // Real launchpad curve progress + graduation, where DYOR knows the token.
@@ -102,7 +95,7 @@ function Terminal() {
       }
       return next;
     });
-  }, [tokensQ.data, heatQ.data, enrichQ.data, dyorQ.data]);
+  }, [tokensQ.data, heat, enrichQ.data, dyorQ.data]);
 
   // Chain-wide 24h volume + whether the current run-rate is rising or falling.
   const volume = useMemo(() => {
@@ -162,8 +155,8 @@ function Terminal() {
           <AlertTriangle className="h-4 w-4 flex-shrink-0 text-warn" />
           <p>
             <span className="text-foreground font-medium">Risk notice.</span> Launchpad tokens are
-            experimental, highly volatile, and often thinly traded. Every figure here is pulled live
-            from {chain.name}'s public RPC, block explorer, and DEX indexers — verify against{" "}
+            experimental, highly volatile, and often thinly traded. Figures are pulled live and can
+            lag — verify against{" "}
             <a
               href={chain.explorerUrl}
               target="_blank"
@@ -172,7 +165,7 @@ function Terminal() {
             >
               the explorer
             </a>{" "}
-            before trading. This terminal never custodies funds and never requests keys.
+            before trading.
           </p>
         </div>
       </div>

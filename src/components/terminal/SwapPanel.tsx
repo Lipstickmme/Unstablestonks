@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, Settings2, Zap, Loader2, ExternalLink } from "lucide-react";
-import { formatCompactToken, formatUSD, shortAddr } from "@/lib/format";
+import { formatCompactToken, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
@@ -9,7 +9,6 @@ import {
   feePreview,
   quoteSwap,
   swapEnabled,
-  FEE_RECIPIENT,
   PLATFORM_FEE_BPS,
   type SwapQuote,
 } from "@/lib/swap";
@@ -175,7 +174,7 @@ export function SwapPanel({
     : wrongChain
       ? `Switch to ${chain.shortName}`
       : !enabled
-        ? "Router not configured"
+        ? "Unavailable on this chain"
         : busy
           ? "Confirm in wallet…"
           : `${side === "buy" ? "Buy" : "Sell"} ${token.symbol}`;
@@ -275,10 +274,6 @@ export function SwapPanel({
           }
         />
         <Row
-          label="Fee recipient"
-          value={<span className="num">{shortAddr(FEE_RECIPIENT)}</span>}
-        />
-        <Row
           label="Min received"
           value={
             <span className="num">
@@ -307,40 +302,18 @@ export function SwapPanel({
           value={
             <span className="num">
               {quote?.ok && quote.routeLabel
-                ? `${side === "buy" ? quote.routeLabel.replace(/[^→]+$/, token.symbol) : `${token.symbol}${quote.routeLabel.replace(/^[^→]+/, "")}`}${
-                    quote.feeTier ? ` · ${quote.feeTier / 10_000}%` : ""
-                  }`
+                ? side === "buy"
+                  ? quote.routeLabel.replace(/[^→]+$/, token.symbol)
+                  : `${token.symbol}${quote.routeLabel.replace(/^[^→]+/, "")}`
                 : "—"}
             </span>
           }
         />
-        <Row
-          label="Router"
-          value={
-            <span className="num">
-              {chain.router
-                ? `${chain.router.kind === "uniswapV3" ? "V3 " : "V2 "}${shortAddr(chain.router.address)}`
-                : "not set"}
-            </span>
-          }
-        />
-        {chain.router?.kind === "uniswapV3" && side === "sell" && (
-          <Row
-            label="Settlement"
-            value={
-              <span className="text-muted-foreground">
-                wrapped {chain.nativeCurrency.symbol} (W{chain.nativeCurrency.symbol})
-              </span>
-            }
-          />
-        )}
       </div>
 
       {!enabled && (
         <p className="mt-2 rounded-lg border border-warn/30 bg-warn/10 p-2 text-[11px] text-warn">
-          No DEX router is configured for {chain.name} yet. The{" "}
-          {(PLATFORM_FEE_BPS / 100).toFixed(2)}% treasury fee and routing activate here as soon as a
-          router address is set (VITE_ROUTER_{chain.key.toUpperCase()}).
+          Trading isn't available on {chain.name} yet.
         </p>
       )}
 
@@ -371,9 +344,6 @@ export function SwapPanel({
           )}
         </p>
       )}
-      <p className="mt-2 text-center text-[10px] text-muted-foreground">
-        Non-custodial · direct wallet signature · fee routed on-chain to the treasury.
-      </p>
     </section>
   );
 }

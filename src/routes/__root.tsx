@@ -12,7 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
-import { BRAND_IMAGE_URL, BRAND_CARD_URL } from "../config/brand";
+import { BRAND_CARD_URL, FAVICONS } from "../config/brand";
 import { WalletProvider } from "../lib/wallet";
 import { WatchlistProvider } from "../lib/watchlist";
 import { Toaster } from "../components/ui/sonner";
@@ -99,12 +99,14 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      // No `type` on the hosted icon: the gateway serves a raw file and letting
-      // the browser sniff it avoids a mismatch silently disabling the favicon.
-      { rel: "icon", href: BRAND_IMAGE_URL },
-      { rel: "apple-touch-icon", href: BRAND_IMAGE_URL },
-      // Kept last as the fallback if the gateway can't be reached.
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      // Each platform gets the size it asks for rather than one big image the
+      // browser has to squash.
+      { rel: "icon", href: FAVICONS.png32, type: "image/png", sizes: "32x32" },
+      { rel: "icon", href: FAVICONS.png16, type: "image/png", sizes: "16x16" },
+      { rel: "apple-touch-icon", href: FAVICONS.apple, sizes: "180x180" },
+      { rel: "manifest", href: "/site.webmanifest" },
+      // Last: the legacy .ico, for anything that ignores the PNG links.
+      { rel: "icon", href: FAVICONS.ico, sizes: "any" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
