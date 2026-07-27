@@ -1,46 +1,13 @@
 import { useState } from "react";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Search, Star } from "lucide-react";
+import { Link, useRouterState } from "@tanstack/react-router";
+import { Star } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { useWatchlist } from "@/lib/watchlist";
 import { ChainSwitcher } from "./ChainSwitcher";
 import { WalletButton } from "./WalletButton";
 import { BridgeModal } from "./BridgeModal";
 import { BridgeIcon } from "@/components/brand/BridgeIcon";
-
-const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
-
-function SearchBox({ className = "" }: { className?: string }) {
-  const [q, setQ] = useState("");
-  const navigate = useNavigate();
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const v = q.trim();
-    if (!v) return;
-    if (ADDR_RE.test(v)) {
-      navigate({ to: "/token/$address", params: { address: v } });
-    } else {
-      navigate({ to: "/", search: { q: v, view: "all" } });
-    }
-    setQ("");
-  };
-
-  return (
-    <form
-      onSubmit={submit}
-      className={`items-center gap-2 rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-muted-foreground ${className}`}
-    >
-      <Search className="h-3.5 w-3.5 flex-shrink-0" />
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        className="w-full bg-transparent text-foreground outline-none placeholder:text-muted-foreground/70"
-        placeholder="Search symbol, name, or paste CA…"
-      />
-    </form>
-  );
-}
+import { SearchBox } from "./SearchBox";
 
 export function Header() {
   const { count } = useWatchlist();
