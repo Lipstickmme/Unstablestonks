@@ -39,9 +39,18 @@ export const FAVICONS = {
   android512: "/android-chrome-512x512.png",
 } as const;
 
-/** Per-DEX artwork, matched on the venue name a pool reports. */
+/**
+ * Per-DEX artwork, matched on the venue name a pool reports.
+ *
+ * Regexes rather than exact names: indexers report "Uniswap V3", "uniswap_v3",
+ * "DYORSwap (Stable)" and similar variants for the same venue, so matching on
+ * the recognisable stem survives whatever spelling comes back. Order matters —
+ * the first match wins.
+ */
 const VENUE_LOGOS: { test: RegExp; src: string }[] = [
   { test: /uniswap/i, src: "/uniswaplogo.png" },
+  { test: /dyor/i, src: "/dyorswap.jpg" },
+  { test: /pons/i, src: "/ponsfamily.jpg" },
 ];
 
 /** Logo for a trading venue, when we have one. */
