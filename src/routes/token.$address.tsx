@@ -338,7 +338,13 @@ function TokenDetail() {
 
                 {/* Activity reads as a continuation of the holder list, so it
                     sits under it in the main column rather than in the rail. */}
-                <LiveTrades trades={trades} />
+                <LiveTrades
+                  trades={trades}
+                  loading={activityQ.isLoading}
+                  token={token.address}
+                  decimals={token.decimals ?? 18}
+                  totalSupply={token.totalSupply ?? 0}
+                />
               </div>
 
               <div className="space-y-4">

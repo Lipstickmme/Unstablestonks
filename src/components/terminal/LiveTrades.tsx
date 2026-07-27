@@ -1,8 +1,64 @@
-import { formatUSD } from "@/lib/format";
+import { useMemo } from "react";
+import { ArrowDownRight, ArrowUpRight, ExternalLink } from "lucide-react";
+import { formatUSD, shortAddr } from "@/lib/format";
 import type { TradeEvent } from "@/lib/types";
-import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+import { profileTraders, type SizeTier } from "@/lib/traders";
+import { useChain } from "@/lib/chain-context";
+import { useTraderHoldings } from "@/lib/data/hooks";
 
-export function LiveTrades({ trades, loading }: { trades: TradeEvent[]; loading?: boolean }) {
+const TIER_CLASS: Record<SizeTier, string> = {
+  whale: "border-primary/40 bg-primary/10 text-primary",
+  shark: "border-hot/40 bg-hot/10 text-hot",
+  fish: "border-border bg-secondary text-muted-foreground",
+  shrimp: "border-border bg-secondary text-muted-foreground",
+};
+
+/** Compact age. Raw seconds stop being readable within the hour. */
+function age(ms: number): string {
+  const s = Math.max(1, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/**
+ * Live trades, with who is behind each one.
+ *
+ * The feed already carries the wallet on every trade, so the trader's recent
+ * behaviour — how many swaps, whether they're net buying, what they realised —
+ * is derivable for free (see profileTraders) with no extra requests. Holdings
+ * are the one thing trades can't answer, so those come from a batched balanceOf
+ * and fill in when ready.
+ *
+ * `token` and `totalSupply` are optional: on the chain-wide feed a row can be
+ * any token, so the supply figure only appears on a single-token page where
+ * "share of supply" actually means something.
+ */
+export function LiveTrades({
+  trades,
+  loading,
+  token,
+  decimals = 18,
+  totalSupply = 0,
+}: {
+  trades: TradeEvent[];
+  loading?: boolean;
+  /** Token address, when the feed is for one token. Enables the supply figure. */
+  token?: string;
+  decimals?: number;
+  totalSupply?: number;
+}) {
+  const { chain } = useChain();
+
+  const profiles = useMemo(() => profileTraders(trades), [trades]);
+  const wallets = useMemo(
+    () => [...new Set(trades.map((t) => (t.wallet || "").toLowerCase()).filter(Boolean))],
+    [trades],
+  );
+  const holdingsQ = useTraderHoldings(wallets, token, decimals, totalSupply);
+  const holdings = holdingsQ.data;
+
   return (
     <section className="card-surface flex h-full flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -12,43 +68,128 @@ export function LiveTrades({ trades, loading }: { trades: TradeEvent[]; loading?
         </div>
         <span className="font-mono text-[10px] text-muted-foreground">on-chain</span>
       </div>
+
       <div className="max-h-[420px] flex-1 overflow-y-auto">
         {trades.length === 0 ? (
           <div className="px-4 py-12 text-center text-xs text-muted-foreground">
             {loading ? "Loading on-chain activity…" : "No recent on-chain activity indexed yet."}
           </div>
         ) : (
-          <table className="w-full text-xs">
-            <tbody>
-              {trades.map((t) => {
-                const buy = t.side === "buy";
-                return (
-                  <tr key={t.id} className="border-b border-border/40 hover:bg-surface-elevated/50">
-                    <td className="px-3 py-2">
+          <ul>
+            {trades.map((t) => {
+              const buy = t.side === "buy";
+              const key = (t.wallet || "").toLowerCase();
+              const p = profiles.get(key);
+              const supplyPct = holdings?.[key];
+              return (
+                <li
+                  key={t.id}
+                  className="border-b border-border/40 px-3 py-2 transition-colors hover:bg-surface-elevated/50"
+                >
+                  {/* Line 1 — the trade */}
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`inline-flex items-center gap-1 font-mono text-xs font-medium ${
+                        buy ? "text-bull" : "text-bear"
+                      }`}
+                    >
+                      {buy ? (
+                        <ArrowUpRight className="h-3 w-3" />
+                      ) : (
+                        <ArrowDownRight className="h-3 w-3" />
+                      )}
+                      {t.symbol}
+                    </span>
+                    {p && (
                       <span
-                        className={`inline-flex items-center gap-1 font-mono font-medium ${buy ? "text-bull" : "text-bear"}`}
+                        className={`chip !py-0 text-[9px] ${TIER_CLASS[p.tier]}`}
+                        title={`Largest trade in view: ${formatUSD(p.biggestUsd)}`}
                       >
-                        {buy ? (
-                          <ArrowUpRight className="h-3 w-3" />
-                        ) : (
-                          <ArrowDownRight className="h-3 w-3" />
-                        )}
-                        {t.symbol}
+                        {p.tierLabel}
                       </span>
-                    </td>
-                    <td className="num px-2 py-2 text-right">
+                    )}
+                    <span className="num ml-auto text-xs">
                       {t.amountUsd > 0 ? formatUSD(t.amountUsd) : "—"}
-                    </td>
-                    <td className="num px-3 py-2 text-right text-muted-foreground">
-                      {Math.max(1, Math.floor((Date.now() - t.ms) / 1000))}s
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </span>
+                    <span className="num w-8 text-right text-[10px] text-muted-foreground">
+                      {age(t.ms)}
+                    </span>
+                  </div>
+
+                  {/* Line 2 — the trader */}
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                    {t.wallet ? (
+                      <a
+                        href={`${chain.explorerUrl}/address/${t.wallet}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="num inline-flex items-center gap-0.5 hover:text-foreground"
+                      >
+                        {shortAddr(t.wallet)}
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    ) : (
+                      <span className="num">unknown wallet</span>
+                    )}
+
+                    {p && (
+                      <>
+                        <Dot />
+                        <span title="Swaps by this wallet in the loaded window">
+                          <span className="num text-foreground">{p.swaps}</span>{" "}
+                          {p.swaps === 1 ? "swap" : "swaps"}
+                        </span>
+
+                        {p.pnlPct != null ? (
+                          <>
+                            <Dot />
+                            <span
+                              className={p.pnlPct >= 0 ? "text-bull" : "text-bear"}
+                              title="Realised on what they bought AND sold in view — not a lifetime figure"
+                            >
+                              {p.pnlPct >= 0 ? "+" : ""}
+                              {p.pnlPct.toFixed(1)}% realised
+                            </span>
+                          </>
+                        ) : (
+                          p.netUsd !== 0 && (
+                            <>
+                              <Dot />
+                              <span
+                                className={p.netUsd > 0 ? "text-bull" : "text-bear"}
+                                title="Net flow across their trades in view. No P&L yet — they haven't both bought and sold here."
+                              >
+                                {p.netUsd > 0 ? "net buying" : "net selling"}{" "}
+                                <span className="num">{formatUSD(Math.abs(p.netUsd))}</span>
+                              </span>
+                            </>
+                          )
+                        )}
+                      </>
+                    )}
+
+                    {supplyPct != null && (
+                      <>
+                        <Dot />
+                        <span title="Share of total supply this wallet holds now">
+                          holds{" "}
+                          <span className="num text-foreground">
+                            {supplyPct < 0.01 ? "<0.01" : supplyPct.toFixed(2)}%
+                          </span>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </section>
   );
+}
+
+function Dot() {
+  return <span className="text-muted-foreground/40">·</span>;
 }

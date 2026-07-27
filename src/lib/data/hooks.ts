@@ -54,6 +54,9 @@ const DIRECTORY_REFRESH = 5 * 60_000;
 const TRADES_REFRESH = 45_000;
 const ENRICH_REFRESH = 180_000;
 
+/** Balances fetched per trade feed — one multicall, but still a bounded one. */
+const MAX_TRADER_BALANCES = 24;
+
 /** DYOR's public JSON API is unconfirmed — opt in explicitly. */
 const DYOR_ENABLED =
   (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DYOR_API === "1";
@@ -474,6 +477,49 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
           out[t.address] = insight;
         }),
       );
+      return out;
+    },
+  });
+}
+
+/**
+ * Current holdings for the wallets visible in a trade feed, as a share of
+ * supply.
+ *
+ * The trade feed says what a wallet did; only the chain says what it still
+ * holds. Every balance is one balanceOf, but the public client batches them
+ * into a single multicall, so a screenful of wallets costs one round trip.
+ * Capped at MAX_TRADER_BALANCES so a busy feed can't turn into a storm.
+ */
+export function useTraderHoldings(
+  wallets: string[],
+  token: string | undefined,
+  decimals: number,
+  totalSupply: number,
+) {
+  const { chainKey } = useChain();
+  const targets = wallets.slice(0, MAX_TRADER_BALANCES);
+  const key = targets.join(",");
+
+  return useQuery<Record<string, number>>({
+    queryKey: ["trader-holdings", chainKey, token ?? "", key],
+    enabled: Boolean(token) && totalSupply > 0 && targets.length > 0,
+    staleTime: 120_000,
+    refetchInterval: 120_000,
+    retry: 0,
+    queryFn: async () => {
+      const out: Record<string, number> = {};
+      const balances = await Promise.all(
+        targets.map((w) =>
+          getErc20Balance(chainKey, token as `0x${string}`, w as `0x${string}`, decimals).catch(
+            () => 0,
+          ),
+        ),
+      );
+      targets.forEach((w, i) => {
+        const bal = balances[i];
+        if (bal > 0) out[w.toLowerCase()] = (bal / totalSupply) * 100;
+      });
       return out;
     },
   });
