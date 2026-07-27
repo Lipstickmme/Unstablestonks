@@ -10,6 +10,20 @@ import {
 } from "react";
 import { createWalletClient, custom, type WalletClient } from "viem";
 import { CHAINS, type ChainConfig } from "@/config/chains";
+
+/**
+ * The minimum a chain must describe for the wallet to switch to it and sign on
+ * it. Deliberately narrower than ChainConfig so the bridge can target chains
+ * the terminal doesn't trade on — Ethereum, Base, Arbitrum — without inventing
+ * the trading fields (routers, indexer slugs) they'd never use.
+ */
+export interface SwitchableChain {
+  id: number;
+  name: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: string[];
+  explorerUrl: string;
+}
 import { toViemChain } from "./data/rpc";
 
 // EIP-1193 + EIP-6963 wallet layer. Discovers every injected wallet (MetaMask,
@@ -67,8 +81,8 @@ interface WalletState {
   /** Connect. Pass a specific wallet from `wallets`, else the default is used. */
   connect: (wallet?: DiscoveredWallet) => Promise<`0x${string}` | null>;
   disconnect: () => void;
-  ensureChain: (cfg: ChainConfig) => Promise<boolean>;
-  getWalletClient: (cfg: ChainConfig) => WalletClient | null;
+  ensureChain: (cfg: SwitchableChain) => Promise<boolean>;
+  getWalletClient: (cfg: SwitchableChain) => WalletClient | null;
   /** Raw active provider — needed to build SDK signers. */
   getProvider: () => Eip1193Provider | undefined;
 }
@@ -295,7 +309,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ensureChain = useCallback(
-    async (cfg: ChainConfig): Promise<boolean> => {
+    async (cfg: SwitchableChain): Promise<boolean> => {
       const p = resolveProvider();
       if (!p) return false;
       const hexId = `0x${cfg.id.toString(16)}`;
@@ -332,7 +346,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   );
 
   const getWalletClient = useCallback(
-    (cfg: ChainConfig): WalletClient | null => {
+    (cfg: SwitchableChain): WalletClient | null => {
       const p = resolveProvider();
       if (!p || !address) return null;
       return createWalletClient({

@@ -1,7 +1,14 @@
-import { encodeAbiParameters, pad, type PublicClient, type WalletClient } from "viem";
-import type { ChainConfig } from "@/config/chains";
-import { getPublicClient } from "./data/rpc";
-import type { ChainKey } from "@/config/chains";
+import {
+  createPublicClient,
+  defineChain,
+  fallback,
+  http,
+  pad,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
+import { FEE_RECIPIENT, PLATFORM_FEE_BPS } from "@/config/chains";
+import type { BridgeChain } from "@/config/bridge-chains";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Circle CCTP v2 — native USDC bridging (burn on the source, mint on the
@@ -35,6 +42,27 @@ export const MESSAGE_TRANSMITTER_V2 = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B6
 /** Circle's attestation service. Sandbox serves the testnet domains. */
 const IRIS_MAINNET = "https://iris-api.circle.com";
 const IRIS_SANDBOX = "https://iris-api-sandbox.circle.com";
+
+/**
+ * A read client for any bridge chain, including ones the terminal doesn't
+ * trade on (Ethereum, Base, Arbitrum). Cached per chain id.
+ */
+const clients = new Map<number, PublicClient>();
+function clientFor(c: BridgeChain): PublicClient {
+  const hit = clients.get(c.id);
+  if (hit) return hit;
+  const client = createPublicClient({
+    chain: defineChain({
+      id: c.id,
+      name: c.name,
+      nativeCurrency: c.nativeCurrency,
+      rpcUrls: { default: { http: c.rpcUrls } },
+    }),
+    transport: fallback(c.rpcUrls.map((u) => http(u, { timeout: 12_000 }))),
+  }) as PublicClient;
+  clients.set(c.id, client);
+  return client;
+}
 
 const TOKEN_MESSENGER_ABI = [
   {
@@ -70,6 +98,16 @@ const MESSAGE_TRANSMITTER_ABI = [
 const ERC20_ABI = [
   {
     type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
     name: "approve",
     stateMutability: "nonpayable",
     inputs: [
@@ -101,10 +139,10 @@ export interface CctpStatus {
 }
 
 /** Does the chain expose a CCTP domain, a USDC address, and deployed contracts? */
-async function contractsLive(key: ChainKey, cfg: ChainConfig): Promise<boolean> {
-  if (cfg.cctpDomain == null) return false;
+async function contractsLive(c: BridgeChain): Promise<boolean> {
+  if (c.cctpDomain == null) return false;
   try {
-    const client = getPublicClient(key) as PublicClient;
+    const client = clientFor(c);
     const [messenger, transmitter] = await Promise.all([
       client.getCode({ address: TOKEN_MESSENGER_V2 }),
       client.getCode({ address: MESSAGE_TRANSMITTER_V2 }),
@@ -122,45 +160,33 @@ const STATUS_TTL = 5 * 60_000;
  * Whether a CCTP transfer is possible between two chains right now. Cached
  * briefly so the bridge panel can call it on every keystroke.
  */
-export async function cctpStatus(
-  from: { key: ChainKey; cfg: ChainConfig },
-  to: { key: ChainKey; cfg: ChainConfig },
-): Promise<CctpStatus> {
+export async function cctpStatus(from: BridgeChain, to: BridgeChain): Promise<CctpStatus> {
   const cacheKey = `${from.key}>${to.key}`;
   const hit = statusCache.get(cacheKey);
   if (hit && Date.now() - hit.ts < STATUS_TTL) return hit.status;
 
   let status: CctpStatus;
-  if (from.cfg.cctpDomain == null || to.cfg.cctpDomain == null) {
-    const missing = from.cfg.cctpDomain == null ? from.cfg.name : to.cfg.name;
+  if (from.cctpDomain == null || to.cctpDomain == null) {
+    const missing = from.cctpDomain == null ? from.name : to.name;
     status = { available: false, reason: `${missing} is not a Circle CCTP domain.` };
-  } else if (!usdcAddress(from.cfg)) {
-    status = { available: false, reason: `No USDC address configured for ${from.cfg.name}.` };
+  } else if (!from.usdc || !to.usdc) {
+    const missing = from.usdc ? to.name : from.name;
+    status = { available: false, reason: `No USDC contract known for ${missing}.` };
   } else {
-    const [srcLive, dstLive] = await Promise.all([
-      contractsLive(from.key, from.cfg),
-      contractsLive(to.key, to.cfg),
-    ]);
+    const [srcLive, dstLive] = await Promise.all([contractsLive(from), contractsLive(to)]);
     status =
       srcLive && dstLive
         ? { available: true }
         : {
             available: false,
             reason: `Circle's CCTP contracts aren't live on ${
-              srcLive ? to.cfg.name : from.cfg.name
+              srcLive ? to.name : from.name
             } yet — this route opens automatically when they are.`,
           };
   }
 
   statusCache.set(cacheKey, { ts: Date.now(), status });
   return status;
-}
-
-/** The chain's USDC ERC-20, which is what CCTP burns. */
-export function usdcAddress(cfg: ChainConfig): `0x${string}` | undefined {
-  const sym = cfg.stablecoin?.symbol?.toUpperCase();
-  if (sym === "USDC" && cfg.stablecoin?.address) return cfg.stablecoin.address;
-  return undefined;
 }
 
 /** An EVM address as the bytes32 CCTP expects. */
@@ -220,13 +246,16 @@ async function waitForAttestation(
 /**
  * Burn USDC on the source chain and mint it on the destination.
  *
- * Two wallet signatures on the source chain (approve + burn) and one on the
- * destination (mint). The caller's wallet must be on the source chain when this
- * is called and will be asked to switch before the final step.
+ * `amount` is the GROSS amount the user entered. CCTP has no fee hook of its
+ * own — unlike Relay's appFees — so the platform fee is taken here as a plain
+ * ERC-20 transfer before the burn, and only the remainder is bridged. That
+ * costs one extra signature, which is why Relay is preferred when both rails
+ * are available.
  */
 export async function bridgeViaCctp(params: {
-  from: { key: ChainKey; cfg: ChainConfig };
-  to: { key: ChainKey; cfg: ChainConfig };
+  from: BridgeChain;
+  to: BridgeChain;
+  /** Gross amount in USDC's smallest unit; the fee is deducted from it. */
   amount: bigint;
   account: `0x${string}`;
   sourceWallet: WalletClient;
@@ -236,36 +265,59 @@ export async function bridgeViaCctp(params: {
 }): Promise<`0x${string}` | undefined> {
   const { from, to, amount, account, sourceWallet, destinationWallet, onProgress } = params;
 
-  const usdc = usdcAddress(from.cfg);
-  if (!usdc) throw new Error(`No USDC address configured for ${from.cfg.name}.`);
-  if (to.cfg.cctpDomain == null) throw new Error(`${to.cfg.name} is not a CCTP domain.`);
+  const usdc = from.usdc?.address;
+  if (!usdc) throw new Error(`No USDC contract known for ${from.name}.`);
+  if (to.cctpDomain == null) throw new Error(`${to.name} is not a CCTP domain.`);
 
-  const client = getPublicClient(from.key) as PublicClient;
+  const client = clientFor(from);
   const chain = sourceWallet.chain;
 
-  // 1. Approve the burner for this amount if needed.
+  const fee = (amount * BigInt(PLATFORM_FEE_BPS)) / 10_000n;
+  const bridged = amount - fee;
+  if (bridged <= 0n) throw new Error("Amount too small to bridge.");
+
+  // How many wallet prompts this run needs, so the progress text can count them.
   const allowance = (await client.readContract({
     address: usdc,
     abi: ERC20_ABI,
     functionName: "allowance",
     args: [account, TOKEN_MESSENGER_V2],
   })) as bigint;
+  const needsApproval = allowance < bridged;
+  const total = 1 + (fee > 0n ? 1 : 0) + (needsApproval ? 1 : 0);
+  let step = 0;
+  const prompt = () => onProgress?.({ message: `Confirm in your wallet (${++step}/${total})…` });
 
-  if (allowance < amount) {
-    onProgress?.({ message: "Confirm in your wallet (1/2)…" });
+  // 1. Platform fee → treasury.
+  if (fee > 0n) {
+    prompt();
+    const feeHash = await sourceWallet.writeContract({
+      account,
+      chain,
+      address: usdc,
+      abi: ERC20_ABI,
+      functionName: "transfer",
+      args: [FEE_RECIPIENT, fee],
+    });
+    await client.waitForTransactionReceipt({ hash: feeHash });
+  }
+
+  // 2. Approve the burner for the remainder if needed.
+  if (needsApproval) {
+    prompt();
     const approveHash = await sourceWallet.writeContract({
       account,
       chain,
       address: usdc,
       abi: ERC20_ABI,
       functionName: "approve",
-      args: [TOKEN_MESSENGER_V2, amount],
+      args: [TOKEN_MESSENGER_V2, bridged],
     });
     await client.waitForTransactionReceipt({ hash: approveHash });
   }
 
-  // 2. Burn on the source chain.
-  onProgress?.({ message: "Confirm in your wallet (2/2)…" });
+  // 3. Burn on the source chain.
+  prompt();
   const burnHash = await sourceWallet.writeContract({
     account,
     chain,
@@ -273,8 +325,8 @@ export async function bridgeViaCctp(params: {
     abi: TOKEN_MESSENGER_ABI,
     functionName: "depositForBurn",
     args: [
-      amount,
-      to.cfg.cctpDomain,
+      bridged,
+      to.cctpDomain,
       toBytes32(account),
       usdc,
       // Zero destinationCaller = anyone may deliver the mint.
@@ -287,12 +339,13 @@ export async function bridgeViaCctp(params: {
   });
   await client.waitForTransactionReceipt({ hash: burnHash });
 
-  // 3. Circle attests once the burn is final.
+  // 4. Circle attests once the burn is final.
   onProgress?.({ message: "Waiting for Circle's attestation…", txHash: burnHash });
   const attested = await waitForAttestation(
-    from.cfg.cctpDomain!,
+    from.cctpDomain!,
     burnHash,
-    from.cfg.network === "testnet",
+    // Circle's sandbox attestation service serves the testnet domains.
+    from.key === "arc" && from.id !== 5042,
     onProgress,
   );
   if (!attested) {
@@ -301,11 +354,11 @@ export async function bridgeViaCctp(params: {
     );
   }
 
-  // 4. Mint on the destination chain.
-  onProgress?.({ message: `Switch to ${to.cfg.name} and confirm…` });
+  // 5. Mint on the destination chain.
+  onProgress?.({ message: `Switch to ${to.name} and confirm…` });
   const destWallet = await destinationWallet();
   if (!destWallet) {
-    throw new Error(`Switch your wallet to ${to.cfg.name} to receive the funds.`);
+    throw new Error(`Switch your wallet to ${to.name} to receive the funds.`);
   }
 
   const mintHash = await destWallet.writeContract({
@@ -319,9 +372,4 @@ export async function bridgeViaCctp(params: {
 
   onProgress?.({ message: "Bridged — funds are in your wallet.", txHash: mintHash, done: true });
   return mintHash;
-}
-
-/** Kept for callers that want the encoded burn args without sending. */
-export function encodeMintRecipient(addr: `0x${string}`): `0x${string}` {
-  return encodeAbiParameters([{ type: "bytes32" }], [toBytes32(addr)]);
 }

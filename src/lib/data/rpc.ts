@@ -62,7 +62,17 @@ const ERC20_ABI = [
   },
 ] as const;
 
-export function toViemChain(cfg: ChainConfig): Chain {
+/** Any chain the wallet can be pointed at, not just a trading chain. */
+interface ViemChainInput {
+  id: number;
+  name: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: string[];
+  explorerUrl: string;
+  network?: "mainnet" | "testnet";
+}
+
+export function toViemChain(cfg: ViemChainInput): Chain {
   return defineChain({
     id: cfg.id,
     name: cfg.name,
