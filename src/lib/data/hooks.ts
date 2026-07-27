@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useChain } from "@/lib/chain-context";
 import type { ChainConfig, ChainKey } from "@/config/chains";
@@ -36,6 +36,23 @@ import { readCache, writeCache } from "../persist";
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
 const REFRESH = 30_000;
+
+/**
+ * The token directory — which tokens exist, their metadata, new launches — is
+ * refreshed far less often than prices. Splitting the two is what keeps a tick
+ * down to four requests instead of ten.
+ */
+const DIRECTORY_REFRESH = 5 * 60_000;
+
+/**
+ * GeckoTerminal's free tier allows ~30 calls/min and these three feeds share it:
+ * the pool lists (4 per REFRESH), the trade feeds (one per pool per TRADES_REFRESH)
+ * and the row backfill (two per token per ENRICH_REFRESH). At these intervals the
+ * total sits around 25/min — enough headroom that a slow response never pushes a
+ * cycle over the limit, which is what used to surface as rows losing their data.
+ */
+const TRADES_REFRESH = 45_000;
+const ENRICH_REFRESH = 180_000;
 
 /** DYOR's public JSON API is unconfirmed — opt in explicitly. */
 const DYOR_ENABLED =
@@ -178,15 +195,29 @@ function foldRow(into: TokenRow, extra: TokenRow): void {
 export function useTokens() {
   const { chain, chainKey } = useChain();
   const cacheKey = `tokens.${chainKey}`;
-  return useQuery<TokenRow[]>({
-    queryKey: ["tokens", chainKey],
+
+  // ── Fast lane: live market structure ───────────────────────────────────────
+  // Prices, volumes and buy/sell counts are the only things that meaningfully
+  // change minute to minute, and GeckoTerminal is the one source that carries
+  // them. Four calls, every REFRESH.
+  const marketQ = useQuery<TokenRow[]>({
+    queryKey: ["tokens-market", chainKey],
     refetchInterval: REFRESH,
-    // Paint immediately from the last good list, then refresh in the background.
-    initialData: () => readCache<TokenRow[]>(cacheKey),
-    initialDataUpdatedAt: 0,
+    staleTime: REFRESH / 2,
+    queryFn: () => fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
+  });
+
+  // ── Slow lane: what exists on the chain ────────────────────────────────────
+  // Which tokens exist, their names, decimals and icons — plus discovery of new
+  // launches. None of it changes on a 30s scale, and together it was six extra
+  // network calls per tick. Once every DIRECTORY_REFRESH is plenty, and it keeps
+  // the fast lane comfortably inside GeckoTerminal's rate limit.
+  const directoryQ = useQuery<TokenRow[]>({
+    queryKey: ["tokens-directory", chainKey],
+    refetchInterval: DIRECTORY_REFRESH,
+    staleTime: DIRECTORY_REFRESH,
     queryFn: async () => {
-      const [gtRows, dsRows, bsRows, explorerScan] = await Promise.all([
-        fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
+      const [dsRows, bsRows, explorerScan] = await Promise.all([
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
         fetchExplorerTokens(chain).catch(() => ({ rows: [] as TokenRow[], note: "threw" })),
@@ -194,7 +225,7 @@ export function useTokens() {
 
       // The live pools tell the scanner which DEX factories this chain actually
       // uses, so launches are found on whatever venue they happen on.
-      const poolHints = gtRows
+      const poolHints = (marketQ.data ?? [])
         .map((r) => r.primaryPool)
         .filter((p): p is string => Boolean(p))
         .slice(0, 8);
@@ -202,8 +233,17 @@ export function useTokens() {
         () => [] as TokenRow[],
       );
 
+      const rows = [...dsRows, ...bsRows, ...explorerScan.rows, ...freshRows];
+
+      // Price anything the directory found that no market source covers. One
+      // call covers 30 addresses, so this stays cheap even on a full list.
+      const unpriced = rows.filter((t) => !t.indexed).map((t) => t.address);
+      const priced = unpriced.length
+        ? await fetchDexScreenerMarkets(chain, unpriced).catch(() => [] as TokenRow[])
+        : [];
+
       recordSources(chainKey, {
-        geckoterminal: gtRows.length,
+        geckoterminal: marketQ.data?.length ?? 0,
         dexscreener: dsRows.length,
         blockscout: bsRows.length,
         explorer: explorerScan.rows.length,
@@ -211,47 +251,61 @@ export function useTokens() {
         note: explorerScan.note,
       });
 
-      const merged = new Map<string, TokenRow>();
-      // Order matters: the first source to introduce an address owns its market
-      // figures, later ones only fill blanks.
-      for (const group of [gtRows, dsRows, bsRows, explorerScan.rows, freshRows]) {
-        for (const row of group) {
-          const cur = merged.get(row.address);
-          if (cur) foldRow(cur, row);
-          else merged.set(row.address, row);
-        }
-      }
-
-      // Price whatever is still unpriced through DexScreener's batch endpoint —
-      // one call covers 30 addresses, so this is cheap even on a full list.
-      const unpriced = [...merged.values()].filter((t) => !t.indexed).map((t) => t.address);
-      if (unpriced.length) {
-        const priced = await fetchDexScreenerMarkets(chain, unpriced).catch(() => [] as TokenRow[]);
-        for (const p of priced) {
-          const cur = merged.get(p.address);
-          if (cur) foldRow(cur, p);
-        }
-      }
-
-      // Volume ranks the list, but a brand-new launch has none yet — so tokens
-      // discovered in the last 24h sort by age at the top of the untraded tail.
-      const rows = [...merged.values()].sort((a, b) => {
-        if (a.vol24h !== b.vol24h) return b.vol24h - a.vol24h;
-        const aNew = a.ageMinutes >= 0 && a.ageMinutes < 1440;
-        const bNew = b.ageMinutes >= 0 && b.ageMinutes < 1440;
-        if (aNew !== bNew) return aNew ? -1 : 1;
-        return a.ageMinutes - b.ageMinutes;
-      });
-
-      if (rows.length) {
-        writeCache(cacheKey, rows);
-        return rows;
-      }
-      // Everything upstream failed — keep showing the last good list instead of
-      // blanking the terminal.
-      return readCache<TokenRow[]>(cacheKey, 60 * 60_000) ?? [];
+      return [...rows, ...priced];
     },
   });
+
+  // Merge is pure and cheap, so it re-runs on either lane landing rather than
+  // being another query with its own cache entry.
+  return useMemo(() => {
+    const market = marketQ.data ?? [];
+    const directory = directoryQ.data ?? [];
+
+    const merged = new Map<string, TokenRow>();
+    // Order matters: the first source to introduce an address owns its market
+    // figures, later ones only fill blanks. Market data leads.
+    for (const group of [market, directory]) {
+      for (const row of group) {
+        const cur = merged.get(row.address);
+        if (cur) foldRow(cur, row);
+        else merged.set(row.address, { ...row });
+      }
+    }
+
+    // Volume ranks the list, but a brand-new launch has none yet — so tokens
+    // discovered in the last 24h sort by age at the top of the untraded tail.
+    const rows = [...merged.values()].sort((a, b) => {
+      if (a.vol24h !== b.vol24h) return b.vol24h - a.vol24h;
+      const aNew = a.ageMinutes >= 0 && a.ageMinutes < 1440;
+      const bNew = b.ageMinutes >= 0 && b.ageMinutes < 1440;
+      if (aNew !== bNew) return aNew ? -1 : 1;
+      return a.ageMinutes - b.ageMinutes;
+    });
+
+    if (rows.length) {
+      writeCache(cacheKey, rows);
+      return {
+        data: rows,
+        isLoading: false,
+        isError: marketQ.isError && directoryQ.isError,
+      };
+    }
+    // Nothing upstream yet — paint the last good list rather than an empty
+    // terminal, exactly as the single-query version did.
+    return {
+      data: readCache<TokenRow[]>(cacheKey, 60 * 60_000) ?? [],
+      isLoading: marketQ.isLoading || directoryQ.isLoading,
+      isError: marketQ.isError && directoryQ.isError,
+    };
+  }, [
+    marketQ.data,
+    marketQ.isLoading,
+    marketQ.isError,
+    directoryQ.data,
+    directoryQ.isLoading,
+    directoryQ.isError,
+    cacheKey,
+  ]);
 }
 
 /**
@@ -304,8 +358,8 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   return useQuery<Record<string, RowEnrichment>>({
     queryKey: ["row-enrichment", chainKey, key],
     enabled: targets.length > 0,
-    staleTime: 120_000,
-    refetchInterval: 120_000,
+    staleTime: ENRICH_REFRESH,
+    refetchInterval: ENRICH_REFRESH,
     queryFn: async () => {
       const out: Record<string, RowEnrichment> = {};
       const now = Date.now();
@@ -459,7 +513,8 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   return useQuery<TradeEvent[]>({
     queryKey: ["chain-trades", chainKey, key],
     enabled: top.length > 0,
-    refetchInterval: REFRESH,
+    refetchInterval: TRADES_REFRESH,
+    staleTime: TRADES_REFRESH / 2,
     queryFn: async () => {
       const perToken = await Promise.all(
         top.map(async (t) => {

@@ -102,8 +102,3 @@ export const BRIDGE_CHAINS: BridgeChain[] = [...CHAIN_ORDER.map(fromTerminal), .
 export function bridgeChain(key: string): BridgeChain | undefined {
   return BRIDGE_CHAINS.find((c) => c.key === key);
 }
-
-/** Everything except `key` — the valid counterparties for a transfer. */
-export function bridgeCounterparts(key: string): BridgeChain[] {
-  return BRIDGE_CHAINS.filter((c) => c.key !== key);
-}

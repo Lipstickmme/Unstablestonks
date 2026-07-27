@@ -230,12 +230,6 @@ export async function fetchTokenPools(cfg: ChainConfig, address: string): Promis
     .sort((x, y) => y.reserveUsd - x.reserveUsd);
 }
 
-/** Back-compat helper: first (deepest) pool address for a token. */
-export async function fetchTopPool(cfg: ChainConfig, address: string): Promise<string | null> {
-  const pools = await fetchTokenPools(cfg, address);
-  return pools[0]?.pool ?? null;
-}
-
 /**
  * The DEX-indexed token universe for a chain: top pools + newest pools, merged
  * and deduped by base token. Provides REAL 5m/1h/24h volumes, price changes,
