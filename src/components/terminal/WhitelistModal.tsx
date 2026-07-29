@@ -193,16 +193,6 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
                     : "Finish all tasks"}
               </button>
               {error && <p className="mt-2 text-center text-[11px] text-bear">{error}</p>}
-
-              {/* The limitation has to be stated, not buried: a browser cannot
-                  verify a Telegram join or an X follow, and a localStorage
-                  roster is per-device. Saying so is the difference between a
-                  quest and a misleading promise. */}
-              <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
-                Social steps are self-reported — this page can't verify a Telegram join or an X
-                follow. Your spot is recorded in this browser, so the final allocation is confirmed
-                by the team against on-chain and social records before mint.
-              </p>
             </>
           )}
         </div>
