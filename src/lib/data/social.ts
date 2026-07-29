@@ -52,7 +52,9 @@ export function useShareOfVoice(address: string | undefined, peers: string[]) {
 }
 
 /** How many contracts one rotation crawls, and how often it advances. */
-const ROTATION_SIZE = 8;
+// Matches the server function's batch cap. Larger batches were silently
+// truncated, so the extra addresses just never got scored.
+const ROTATION_SIZE = 4;
 const ROTATION_MS = 45_000;
 
 /**

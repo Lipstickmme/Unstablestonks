@@ -88,8 +88,11 @@ export interface ChainConfig {
   /** DYOR Fun V3 API path segment — the API is namespaced /api/<slug>/... */
   dyorSlug?: string;
   /**
-   * DexScreener chain slug, used to check whether a token's DEX listing is paid
-   * for. Unset (or unindexed) → the check reports "unknown" rather than "unpaid".
+   * DexScreener chain slug. DexScreener does not currently index Stable,
+   * Robinhood or Arc — its published chain list covers none of them — so this
+   * is UNSET by default and every DexScreener call is skipped rather than
+   * firing a request that 404s on every cycle. Set the env override the day a
+   * chain gets listed and both the token feed and the paid check start working.
    */
   dexscreenerSlug?: string;
   /** Per-chain accent (oklch) so the UI reskins on switch. */
@@ -170,7 +173,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // Robinhood Chain is indexed by GeckoTerminal — unlocks DEX prices/vol/trades.
     geckoterminalNetwork: "robinhood",
     dyorSlug: "robinhood",
-    dexscreenerSlug: env("VITE_DS_NETWORK_ROBINHOOD") ?? "robinhood",
+    dexscreenerSlug: env("VITE_DS_NETWORK_ROBINHOOD"),
     accent: "oklch(0.87 0.19 128)", // Robinhood lime/green
     tagline: "Arbitrum Orbit L2 · tokenized-stock rails · ~100ms blocks",
   },
@@ -225,7 +228,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // pool data. Harmless empty otherwise. Override via env if the slug differs.
     geckoterminalNetwork: env("VITE_GT_NETWORK_STABLE") ?? "stable",
     dyorSlug: "stable",
-    dexscreenerSlug: env("VITE_DS_NETWORK_STABLE") ?? "stable",
+    dexscreenerSlug: env("VITE_DS_NETWORK_STABLE"),
     accent: "oklch(0.80 0.16 155)", // Tether teal-green
     tagline: "Tether L1 · USDT-native gas · sub-second finality",
   },
@@ -302,7 +305,7 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     },
     geckoterminalNetwork: env("VITE_GT_NETWORK_ARC") ?? "arc",
     dyorSlug: "arc",
-    dexscreenerSlug: env("VITE_DS_NETWORK_ARC") ?? "arc",
+    dexscreenerSlug: env("VITE_DS_NETWORK_ARC"),
     accent: "oklch(0.72 0.16 250)", // Circle blue
     cctpDomain: 26,
     tagline: ARC_TESTNET

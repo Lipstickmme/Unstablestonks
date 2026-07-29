@@ -413,6 +413,8 @@ export interface TokenInsight {
   top10Pct?: number;
   /** DexScreener paid listing — undefined when the chain isn't indexed there. */
   dexPaid?: boolean;
+  /** True when DexScreener doesn't cover this chain at all. */
+  dexUnsupported?: boolean;
 }
 
 /**
@@ -455,7 +457,7 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
             fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
           ]);
 
-          const insight: TokenInsight = { dexPaid: paid.paid };
+          const insight: TokenInsight = { dexPaid: paid.paid, dexUnsupported: paid.unsupported };
 
           if (holders.length) {
             const sum = holders.reduce((s, h) => s + h.pct, 0);
@@ -520,6 +522,67 @@ export function useTraderHoldings(
         const bal = balances[i];
         if (bal > 0) out[w.toLowerCase()] = (bal / totalSupply) * 100;
       });
+      return out;
+    },
+  });
+}
+
+/**
+ * USD value of each wallet's holding of the token it traded.
+ *
+ * Whale-by-wallet needs a dollar figure, not a share of supply, so this reads
+ * balanceOf and prices it with the row's own price. Trades can span several
+ * tokens on the chain-wide feed, so balances are grouped by token — one
+ * multicall per token rather than one call per trade.
+ */
+export function useTraderBalances(wallets: string[], trades: TradeEvent[]) {
+  const { chainKey } = useChain();
+  const tokensQ = useTokens();
+
+  // wallet → the token they traded, and what a unit of it is worth.
+  const pairs = useMemo(() => {
+    const priceOf = new Map(
+      (tokensQ.data ?? []).map((t) => [
+        t.address.toLowerCase(),
+        { price: t.price, decimals: t.decimals ?? 18 },
+      ]),
+    );
+    const out = new Map<string, { token: string; price: number; decimals: number }>();
+    for (const t of trades) {
+      const w = (t.wallet || "").toLowerCase();
+      const token = (t.tokenAddress || "").toLowerCase();
+      if (!w || !token || out.has(w)) continue;
+      const meta = priceOf.get(token);
+      if (!meta || meta.price <= 0) continue;
+      out.set(w, { token, price: meta.price, decimals: meta.decimals });
+    }
+    return out;
+  }, [trades, tokensQ.data]);
+
+  const targets = wallets.filter((w) => pairs.has(w)).slice(0, MAX_TRADER_BALANCES);
+  const key = targets.join(",");
+
+  return useQuery<Record<string, number>>({
+    queryKey: ["trader-balances", chainKey, key],
+    enabled: targets.length > 0,
+    staleTime: 120_000,
+    refetchInterval: 120_000,
+    retry: 0,
+    queryFn: async () => {
+      const out: Record<string, number> = {};
+      await Promise.all(
+        targets.map(async (w) => {
+          const p = pairs.get(w);
+          if (!p) return;
+          const bal = await getErc20Balance(
+            chainKey,
+            p.token as `0x${string}`,
+            w as `0x${string}`,
+            p.decimals,
+          ).catch(() => 0);
+          if (bal > 0) out[w] = bal * p.price;
+        }),
+      );
       return out;
     },
   });

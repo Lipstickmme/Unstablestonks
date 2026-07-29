@@ -107,6 +107,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "manifest", href: "/site.webmanifest" },
       // Last: the legacy .ico, for anything that ignores the PNG links.
       { rel: "icon", href: FAVICONS.ico, sizes: "any" },
+      // Token artwork comes from these two; preconnecting saves a cold DNS +
+      // TLS handshake on the first icon of the list.
+      { rel: "preconnect", href: "https://assets.geckoterminal.com", crossOrigin: "anonymous" },
+      { rel: "preconnect", href: "https://dd.dexscreener.com", crossOrigin: "anonymous" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {

@@ -278,8 +278,12 @@ function TokenDetail() {
                     <Field
                       label="DEX paid"
                       value={
-                        insight?.dexPaid == null ? (
-                          <span className="num text-muted-foreground">not indexed</span>
+                        insight?.dexUnsupported ? (
+                          <span className="num text-muted-foreground">
+                            chain not on DexScreener
+                          </span>
+                        ) : insight?.dexPaid == null ? (
+                          <span className="num text-muted-foreground">—</span>
                         ) : insight.dexPaid ? (
                           <span className="inline-flex items-center gap-1 text-bull">
                             <BadgeCheck className="h-3 w-3" /> paid

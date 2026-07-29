@@ -192,10 +192,19 @@ function SupplyPct({ pct, warnAbove }: { pct?: number; warnAbove: number }) {
  * DexScreener paid-listing state. `undefined` means the chain isn't indexed by
  * DexScreener at all, which is not the same as "unpaid" — that shows as "—".
  */
-function DexPaidCell({ paid }: { paid?: boolean }) {
+function DexPaidCell({ paid, unsupported }: { paid?: boolean; unsupported?: boolean }) {
+  if (unsupported)
+    return (
+      <span
+        className="text-[11px] text-muted-foreground/50"
+        title="DexScreener doesn't index this chain, so there is no paid listing to check."
+      >
+        n/a
+      </span>
+    );
   if (paid == null)
     return (
-      <span className="text-[11px] text-muted-foreground" title="Not indexed by DexScreener">
+      <span className="text-[11px] text-muted-foreground" title="Not checked yet">
         —
       </span>
     );
@@ -591,7 +600,10 @@ export function TokenTable({
                     <BundleCell stats={bundles?.[t.address]} />
                   </div>
                   <div>
-                    <DexPaidCell paid={insights?.[t.address]?.dexPaid} />
+                    <DexPaidCell
+                      paid={insights?.[t.address]?.dexPaid}
+                      unsupported={insights?.[t.address]?.dexUnsupported}
+                    />
                   </div>
                 </td>
                 {/* Venue over social heat. */}

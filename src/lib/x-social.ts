@@ -44,6 +44,20 @@ export interface XSocialResult {
   note?: string;
 }
 
+/**
+ * Fetch budget for a single server-function invocation.
+ *
+ * The crawl runs on Cloudflare Workers, which caps subrequests per invocation
+ * (50 on the free plan). Unbounded, one batch could ask for 8 queries x (4
+ * search sources + 3 Nitter mirrors) x 3 proxy hops = ~170 fetches — the whole
+ * invocation is killed, and the panel shows nothing at all rather than a
+ * partial result. Every hop now draws from a shared budget and the sources stop
+ * when it runs out.
+ */
+interface Budget {
+  left: number;
+}
+
 function serverEnv(key: string): string | undefined {
   try {
     const v = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
@@ -158,10 +172,16 @@ function decodeEntities(s: string): string {
     .trim();
 }
 
-async function viaNitter(query: string, instances: string[]): Promise<XSocialResult | null> {
-  // Three mirrors, two hops each: most public Nitter instances are long dead,
-  // and exhausting the list is what used to burn the entire crawl budget.
-  for (const base of instances.slice(0, 3)) {
+async function viaNitter(
+  query: string,
+  instances: string[],
+  budget: Budget,
+): Promise<XSocialResult | null> {
+  // Two mirrors, two hops each: most public Nitter instances are long dead, and
+  // exhausting the list is what used to burn the entire crawl budget.
+  for (const base of instances.slice(0, 2)) {
+    if (budget.left <= 0) return null;
+    budget.left -= 2;
     try {
       const xml = await proxiedFetchText(
         `${base}/search/rss?f=tweets&q=${encodeURIComponent(query)}`,
@@ -269,13 +289,12 @@ function tsFromStatusId(id: string): number | null {
  * hit, so the count reflects everything reachable. Reach/impressions stay 0
  * (unknowable without the API) and the UI reports the source honestly.
  */
-async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
+async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResult | null> {
   const encoded = encodeURIComponent(`"${query}"`);
   const sources = [
     `https://duckduckgo.com/html/?q=${encoded}+site%3Ax.com`,
-    `https://www.bing.com/search?q=${encoded}+site%3Ax.com`,
     `https://lite.duckduckgo.com/lite/?q=${encoded}+site%3Atwitter.com`,
-    `https://x.com/search?q=${encoded}&f=live`,
+    `https://www.bing.com/search?q=${encoded}+site%3Ax.com`,
   ];
 
   // id → post. Keyed by status id so the same post seen on two engines counts once.
@@ -284,7 +303,9 @@ async function viaOpenCrawl(query: string): Promise<XSocialResult | null> {
   const needle = query.toLowerCase();
 
   for (const url of sources) {
-    const text = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 2 });
+    if (budget.left <= 0) break;
+    budget.left -= 2;
+    const text = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 1 });
     if (!text || text.length < 200) continue;
     const haystack = text.toLowerCase();
 
@@ -377,7 +398,7 @@ function firstOk<T>(promises: Promise<T | null>[]): Promise<T | null> {
   });
 }
 
-async function crawlOne(query: string): Promise<XSocialResult> {
+async function crawlOne(query: string, budget: Budget): Promise<XSocialResult> {
   const bearer = bearerToken();
   if (bearer) {
     const r = await viaXApi(query, bearer);
@@ -393,7 +414,7 @@ async function crawlOne(query: string): Promise<XSocialResult> {
   // Raced, not chained. Walking Nitter's mirrors first — seven instances, each
   // through six fetch hops — consumed the whole deadline before the open crawl
   // ever ran, which is why the panel reported "timed out" instead of a result.
-  const found = await firstOk([viaOpenCrawl(query), viaNitter(query, instances)]);
+  const found = await firstOk([viaOpenCrawl(query, budget), viaNitter(query, instances, budget)]);
   if (found) return found;
 
   return {
@@ -408,7 +429,9 @@ async function crawlOne(query: string): Promise<XSocialResult> {
     ok: false,
     note: bearer
       ? "No recent posts found for this contract."
-      : "No X posts found for this contract, and no bearer token is set. Add X_BEARER_TOKEN for authoritative reach data.",
+      : budget.left <= 0
+        ? "Crawl budget spent before a source answered. Add X_BEARER_TOKEN for reliable data."
+        : "No X posts found for this contract, and no bearer token is set. Add X_BEARER_TOKEN for authoritative reach data.",
   };
 }
 
@@ -420,7 +443,7 @@ const CACHE_TTL_MS = 10 * 60_000;
 const crawlCache = new Map<string, { ts: number; result: XSocialResult }>();
 
 /** Hard ceiling so a slow/unreachable X source can never hang the UI card. */
-function withDeadline(query: string, ms: number): Promise<XSocialResult> {
+function withDeadline(query: string, ms: number, budget: Budget): Promise<XSocialResult> {
   return new Promise((resolve) => {
     let done = false;
     const finish = (r: XSocialResult) => {
@@ -444,7 +467,7 @@ function withDeadline(query: string, ms: number): Promise<XSocialResult> {
         }),
       ms,
     );
-    crawlOne(query).then(
+    crawlOne(query, budget).then(
       (r) => {
         clearTimeout(timer);
         finish(r);
@@ -454,10 +477,10 @@ function withDeadline(query: string, ms: number): Promise<XSocialResult> {
   });
 }
 
-async function crawlCached(query: string): Promise<XSocialResult> {
+async function crawlCached(query: string, budget: Budget): Promise<XSocialResult> {
   const hit = crawlCache.get(query);
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.result;
-  const result = await withDeadline(query, 22_000);
+  const result = await withDeadline(query, 22_000, budget);
   // Only cache successful crawls — let failures retry sooner.
   if (result.ok) crawlCache.set(query, { ts: Date.now(), result });
   return result;
@@ -472,7 +495,7 @@ export const searchXSocial = createServerFn({ method: "GET" })
     if (!query) throw new Error("query required");
     return { query };
   })
-  .handler(async ({ data }): Promise<XSocialResult> => crawlCached(data.query));
+  .handler(async ({ data }): Promise<XSocialResult> => crawlCached(data.query, { left: 12 }));
 
 /**
  * Batch crawl for the dashboard: heat for up to 8 contract addresses. Runs in
@@ -487,12 +510,15 @@ export const searchXSocialBatch = createServerFn({ method: "GET" })
     const queries = (Array.isArray(q) ? q : [])
       .map((v) => String(v ?? "").trim())
       .filter((v) => v.length > 0)
-      .slice(0, 8);
+      .slice(0, 4);
     if (!queries.length) throw new Error("queries required");
     return { queries };
   })
   .handler(async ({ data }): Promise<Record<string, XSocialResult>> => {
-    const results = await Promise.all(data.queries.map((q) => crawlCached(q)));
+    // One budget shared across the batch — the cap is per invocation, not per
+    // query, so splitting it evenly is what keeps the whole call alive.
+    const budget: Budget = { left: 24 };
+    const results = await Promise.all(data.queries.map((q) => crawlCached(q, budget)));
     const out: Record<string, XSocialResult> = {};
     data.queries.forEach((q, i) => {
       out[q] = results[i];

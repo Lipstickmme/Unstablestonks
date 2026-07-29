@@ -6,9 +6,14 @@
 // It returns an array of { type, status, paymentTimestamp }. A token counts as
 // "DEX paid" once at least one order reads status "approved".
 //
-// The chain must be one DexScreener indexes. For a chain it doesn't cover the
-// call 404s and we report `undefined` — unknown, not "unpaid". The UI shows "—"
-// in that case rather than implying the team skipped it.
+// The chain must be one DexScreener indexes. As of now its published chain list
+// covers neither Stable, Robinhood nor Arc, so `dexscreenerSlug` is unset for
+// all three and these calls are skipped entirely instead of 404ing every cycle.
+//
+// When a slug IS configured we still probe once and remember the answer: a 404
+// means the chain isn't listed after all, and there's no point re-asking on
+// every token. The UI reports "unsupported" rather than "unpaid" — the team
+// can't have skipped a listing that isn't offered.
 
 import type { ChainConfig } from "@/config/chains";
 import type { TokenRow } from "../types";
@@ -19,7 +24,12 @@ export interface DexPaidStatus {
   paid?: boolean;
   /** Order kinds seen, e.g. ["tokenProfile", "tokenAd"]. */
   types: string[];
+  /** Set when the chain isn't on DexScreener, so the UI can say why. */
+  unsupported?: boolean;
 }
+
+/** Chains that answered 404 — asked once, then never again this session. */
+const unsupportedChains = new Set<string>();
 
 interface DsOrder {
   type?: string;
@@ -32,7 +42,8 @@ const TTL = 10 * 60_000; // paid status changes rarely
 
 export async function fetchDexPaid(cfg: ChainConfig, address: string): Promise<DexPaidStatus> {
   const slug = cfg.dexscreenerSlug;
-  if (!slug) return { types: [] };
+  if (!slug) return { types: [], unsupported: true };
+  if (unsupportedChains.has(slug)) return { types: [], unsupported: true };
 
   const key = `${slug}:${address.toLowerCase()}`;
   const hit = cache.get(key);
@@ -42,8 +53,12 @@ export async function fetchDexPaid(cfg: ChainConfig, address: string): Promise<D
     `https://api.dexscreener.com/orders/v1/${slug}/${address}`,
     { timeoutMs: 8_000, headers: { Accept: "application/json" } },
   );
-  // null = the chain isn't indexed or the request failed: unknown, not "unpaid".
-  if (!Array.isArray(body)) return { types: [] };
+  if (!Array.isArray(body)) {
+    // A non-array answer for a configured slug means the chain isn't listed.
+    // Remember it so the rest of the list doesn't repeat the same 404.
+    unsupportedChains.add(slug);
+    return { types: [], unsupported: true };
+  }
 
   const approved = body.filter((o) => o.status === "approved");
   const data: DexPaidStatus = {
@@ -202,6 +217,8 @@ function rowsFromPairs(cfg: ChainConfig, pairs: DsPair[]): TokenRow[] {
  * its quote assets. Empty (never an error) when the chain isn't indexed.
  */
 export async function fetchDexScreenerTokens(cfg: ChainConfig): Promise<TokenRow[]> {
+  // No slug = DexScreener doesn't index this chain; skip the request entirely.
+  if (!cfg.dexscreenerSlug) return [];
   const quotes = [cfg.intermediary?.address, cfg.wrappedNative, cfg.stablecoin?.address].filter(
     (a, i, arr) => a && arr.indexOf(a) === i,
   ) as string[];
@@ -229,7 +246,7 @@ export async function fetchDexScreenerMarkets(
   cfg: ChainConfig,
   addresses: string[],
 ): Promise<TokenRow[]> {
-  if (!addresses.length) return [];
+  if (!addresses.length || !cfg.dexscreenerSlug) return [];
   const batch = addresses.slice(0, 30).join(",");
   const body = await proxiedFetchJson<{ pairs?: DsPair[] }>(
     `https://api.dexscreener.com/latest/dex/tokens/${batch}`,
