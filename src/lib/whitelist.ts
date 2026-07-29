@@ -1,27 +1,18 @@
 import { readCache, writeCache } from "./persist";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NFT whitelist quest.
+// NFT whitelist quest — local state.
 //
-// ⚠️ SCOPE — read before trusting any number this file produces.
+// This file holds the per-device half: which tasks are done, and the claimed
+// spot once one is granted.
 //
-// The roster lives in localStorage, on the visitor's own device, because that's
-// what was asked for. Two consequences that cannot be engineered away from the
-// front end:
+// The ROSTER is authoritative only when a shared store is configured (see
+// store.ts). With one, the spot number comes from the server and means the same
+// to everyone. Without one, the fallback below numbers claims per browser — so
+// every visitor sees a low number, and it can be edited by hand.
 //
-//   1. It is NOT a shared list. Every device keeps its own copy, so every
-//      visitor sees a low spot number. "#7 of 100" means "the 7th claim in this
-//      browser", not the 7th in the world.
-//   2. It is NOT tamper-proof. Anyone can edit localStorage and award themselves
-//      a spot, an earlier number, or all 100.
-//
-// The social tasks are self-attested for the same reason: a browser cannot
-// verify a Telegram join or an X follow. Only the trade is really observed —
-// SwapPanel marks it after a swap actually confirms on chain.
-//
-// Making this authoritative needs a server holding the roster, wallet-signature
-// proof of address ownership, and either the platform APIs or a manual review
-// for the social steps. The UI says so rather than implying otherwise.
+// Task completion is local either way. Only the trade is really observed:
+// SwapPanel marks it after a swap confirms on chain.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const WHITELIST_CAP = 100;
@@ -90,11 +81,29 @@ export type ClaimResult =
  * Re-claiming with the same wallet returns the existing spot rather than
  * consuming another, so a refresh can't inflate the count.
  */
-export function claimSpot(wallet: string): ClaimResult {
+export function claimSpot(wallet: string, authoritativeSpot?: number): ClaimResult {
   const s = readWhitelist();
   if (!allTasksDone(s)) return { ok: false, reason: "Finish every task first." };
 
   const addr = wallet.toLowerCase();
+
+  // A spot handed back by the shared roster wins outright — it's the only
+  // number that means the same thing to every visitor.
+  if (typeof authoritativeSpot === "number" && authoritativeSpot > 0) {
+    const roster = s.roster.includes(addr) ? s.roster : [...s.roster, addr];
+    return {
+      ok: true,
+      spot: authoritativeSpot,
+      state: save({
+        ...s,
+        roster,
+        wallet: addr,
+        spot: authoritativeSpot,
+        claimedAt: s.claimedAt ?? Date.now(),
+      }),
+    };
+  }
+
   const existing = s.roster.indexOf(addr);
   if (existing >= 0) {
     const spot = existing + 1;

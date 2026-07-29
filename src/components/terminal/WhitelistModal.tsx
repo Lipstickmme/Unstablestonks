@@ -15,6 +15,7 @@ import {
   type QuestId,
   type WhitelistState,
 } from "@/lib/whitelist";
+import { claimWhitelistSpot, readWhitelistCount } from "@/lib/store";
 import { TraderIdCard } from "./TraderIdCard";
 
 const TASK_LINK: Partial<Record<QuestId, string>> = {
@@ -30,6 +31,14 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<WhitelistState>(() => readWhitelist());
   const [error, setError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState(false);
+  const [taken, setTaken] = useState<number | null>(null);
+
+  // Shared count when a store is configured; null keeps the local number.
+  useEffect(() => {
+    readWhitelistCount()
+      .then((r) => setTaken(r.shared ? r.taken : null))
+      .catch(() => setTaken(null));
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -46,7 +55,7 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
 
   const done = allTasksDone(state);
   const claimed = state.spot != null && state.wallet != null;
-  const remaining = Math.max(0, WHITELIST_CAP - state.roster.length);
+  const remaining = Math.max(0, WHITELIST_CAP - (taken ?? state.roster.length));
 
   const onClaim = () => {
     setError(null);
@@ -56,10 +65,28 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
       return;
     }
     setClaiming(true);
-    const res = claimSpot(wallet.address);
-    setClaiming(false);
-    if (!res.ok) setError(res.reason);
-    else setState(res.state);
+    void (async () => {
+      // Ask the shared roster first — it's the only thing that can hand out a
+      // spot number that means the same to everyone. If no store is configured
+      // it answers shared:false and we keep the per-device roster.
+      const remote = await claimWhitelistSpot({
+        data: { wallet: wallet.address as string },
+      }).catch(() => null);
+
+      if (remote?.shared) {
+        setTaken(remote.taken);
+        if (!remote.ok) {
+          setError(remote.reason ?? "Could not claim a spot.");
+          setClaiming(false);
+          return;
+        }
+      }
+
+      const local = claimSpot(wallet.address as string, remote?.shared ? remote.spot : undefined);
+      setClaiming(false);
+      if (!local.ok) setError(local.reason);
+      else setState(local.state);
+    })();
   };
 
   const shareText = claimed

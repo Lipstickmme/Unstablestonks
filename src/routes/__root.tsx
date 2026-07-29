@@ -13,6 +13,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
 import { BRAND_CARD_URL, FAVICONS } from "../config/brand";
+import { trackEvent } from "../lib/store";
 import { WalletProvider } from "../lib/wallet";
 import { WatchlistProvider } from "../lib/watchlist";
 import { Toaster } from "../components/ui/sonner";
@@ -141,6 +142,19 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  // One visit per browser session. Counters only — no address, no fingerprint.
+  // Silently does nothing when no store is configured.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("visit.counted")) return;
+      sessionStorage.setItem("visit.counted", "1");
+    } catch {
+      // Private mode: count it and move on.
+    }
+    void trackEvent({ data: { name: "visit" } }).catch(() => {});
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ChainProvider>

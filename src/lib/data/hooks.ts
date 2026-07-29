@@ -32,6 +32,7 @@ import { getErc20Balance, getErc20Meta, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
 import { fetchExplorerStats } from "../explorer-stats";
 import { readCache, writeCache } from "../persist";
+import { readSnapshot, writeSnapshot } from "../store";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
@@ -210,6 +211,28 @@ export function useTokens() {
     queryFn: () => fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
   });
 
+  // Shared snapshot of the last good list. A visitor with no localStorage —
+  // first visit, new device, cleared cache — paints real rows straight away
+  // instead of watching the indexers resolve, and logos arrive attached to the
+  // row rather than after an enrichment pass. Resolves to null when no store is
+  // configured, in which case nothing below changes.
+  const snapshotQ = useQuery<TokenRow[] | null>({
+    queryKey: ["tokens-snapshot", chainKey],
+    enabled: !readCache<TokenRow[]>(cacheKey)?.length,
+    staleTime: 5 * 60_000,
+    refetchInterval: false,
+    retry: 0,
+    queryFn: async () => {
+      const snap = await readSnapshot({ data: { chain: chainKey } }).catch(() => null);
+      if (!snap?.json) return null;
+      try {
+        return JSON.parse(snap.json) as TokenRow[];
+      } catch {
+        return null;
+      }
+    },
+  });
+
   // ── Slow lane: what exists on the chain ────────────────────────────────────
   // Which tokens exist, their names, decimals and icons — plus discovery of new
   // launches. None of it changes on a 30s scale, and together it was six extra
@@ -263,11 +286,13 @@ export function useTokens() {
   return useMemo(() => {
     const market = marketQ.data ?? [];
     const directory = directoryQ.data ?? [];
+    const snapshot = snapshotQ.data ?? [];
 
     const merged = new Map<string, TokenRow>();
     // Order matters: the first source to introduce an address owns its market
-    // figures, later ones only fill blanks. Market data leads.
-    for (const group of [market, directory]) {
+    // figures, later ones only fill blanks. Live data leads; the snapshot is
+    // last, so it can only fill gaps and never overwrite a fresh figure.
+    for (const group of [market, directory, snapshot]) {
       for (const row of group) {
         const cur = merged.get(row.address);
         if (cur) foldRow(cur, row);
@@ -287,6 +312,13 @@ export function useTokens() {
 
     if (rows.length) {
       writeCache(cacheKey, rows);
+      // Publish for the next cold visitor. Only when the live sources actually
+      // answered — echoing a snapshot back would keep it alive forever.
+      if (market.length) {
+        void writeSnapshot({
+          data: { chain: chainKey, json: JSON.stringify(rows.slice(0, 120)) },
+        }).catch(() => {});
+      }
       return {
         data: rows,
         isLoading: false,
@@ -307,7 +339,9 @@ export function useTokens() {
     directoryQ.data,
     directoryQ.isLoading,
     directoryQ.isError,
+    snapshotQ.data,
     cacheKey,
+    chainKey,
   ]);
 }
 
