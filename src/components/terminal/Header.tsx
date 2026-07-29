@@ -6,12 +6,14 @@ import { useWatchlist } from "@/lib/watchlist";
 import { ChainSwitcher } from "./ChainSwitcher";
 import { WalletButton } from "./WalletButton";
 import { BridgeModal } from "./BridgeModal";
+import { WhitelistModal } from "./WhitelistModal";
 import { BridgeIcon } from "@/components/brand/BridgeIcon";
 import { SearchBox } from "./SearchBox";
 
 export function Header() {
   const { count } = useWatchlist();
   const [bridgeOpen, setBridgeOpen] = useState(false);
+  const [whitelistOpen, setWhitelistOpen] = useState(false);
   const routerState = useRouterState();
   const path = routerState.location.pathname;
   const search = routerState.location.search as { view?: string };
@@ -58,6 +60,27 @@ export function Header() {
         <div className="ml-auto flex items-center gap-2 sm:ml-0">
           {/* Bridging isn't token-specific, so it lives here rather than on a
               token page, and opens as a dialog exactly like quick-buy. */}
+          {/* Whitelist quest. Framed so it reads as a badge rather than another
+              tool icon, and pulsing while the campaign is open. */}
+          <button
+            onClick={() => setWhitelistOpen(true)}
+            title="NFT whitelist — complete the tasks to claim a spot"
+            aria-label="NFT whitelist"
+            className="relative rounded-full p-[1.5px] transition-transform hover:scale-105"
+            style={{
+              background:
+                "linear-gradient(135deg,#e5e7eb 0%,#6b7280 30%,#1c1d21 55%,#9aa2ad 80%,#e5e7eb 100%)",
+            }}
+          >
+            <img
+              src="/unstablestonks012.png"
+              alt=""
+              width={28}
+              height={28}
+              className="h-7 w-7 rounded-full object-cover"
+            />
+            <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+          </button>
           <button
             onClick={() => setBridgeOpen(true)}
             title="Bridge funds in"
@@ -77,6 +100,7 @@ export function Header() {
       </div>
 
       {bridgeOpen && <BridgeModal onClose={() => setBridgeOpen(false)} />}
+      {whitelistOpen && <WhitelistModal onClose={() => setWhitelistOpen(false)} />}
     </header>
   );
 }

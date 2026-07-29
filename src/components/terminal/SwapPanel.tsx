@@ -13,6 +13,7 @@ import {
   type SwapQuote,
 } from "@/lib/swap";
 import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
+import { markTradeComplete } from "@/lib/whitelist";
 
 /**
  * Amount for a 25% / 50% / MAX button.
@@ -159,6 +160,8 @@ export function SwapPanel({
       });
       setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
       setStatus("Submitted. Track it on the explorer.");
+      // The one whitelist task we can actually observe.
+      if (res.swapTxHash) markTradeComplete();
     } catch (e) {
       setStatus(e instanceof Error ? e.message.split("\n")[0] : "Swap failed.");
     } finally {

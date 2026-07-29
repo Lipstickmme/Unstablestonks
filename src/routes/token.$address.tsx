@@ -17,7 +17,7 @@ import {
   useTokenInsights,
   type ChartTimeframe,
 } from "@/lib/data/hooks";
-import { BASE_BOT_URL } from "@/config/links";
+import { baseBotUrl } from "@/config/links";
 import { venueLogo } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
 import { useShareOfVoice } from "@/lib/data/social";
@@ -354,12 +354,12 @@ function TokenDetail() {
               <div className="space-y-4">
                 <SwapPanel token={token} />
                 <a
-                  href={BASE_BOT_URL}
+                  href={baseBotUrl(token.address)}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center justify-center gap-2 rounded-xl border border-border bg-surface py-2.5 text-xs font-medium transition-colors hover:border-primary/50 hover:bg-surface-elevated"
                 >
-                  <Send className="h-3.5 w-3.5" /> Buy on BaseBot (Telegram)
+                  <Send className="h-3.5 w-3.5" /> Buy {token.symbol} on BaseBot
                 </a>
                 <XSocialPanel
                   address={token.address}

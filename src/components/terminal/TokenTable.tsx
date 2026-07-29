@@ -4,7 +4,7 @@ import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
 import { useSourceCounts, type TokenInsight } from "@/lib/data/hooks";
-import { BASE_BOT_URL } from "@/config/links";
+import { baseBotUrl } from "@/config/links";
 import { venueLogo } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
 import { useChain } from "@/lib/chain-context";
@@ -411,11 +411,11 @@ export function TokenTable({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
+        <table className="w-full min-w-[760px] text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-elevated/40 text-left">
-              <th className="w-[168px] px-3 py-2">
+              <th className="sticky left-0 z-20 w-[150px] bg-surface-elevated px-3 py-2 sm:w-[168px]">
                 <H k="age" label="Token" />
               </th>
               <th className="px-1.5 py-2">
@@ -500,7 +500,11 @@ export function TokenTable({
                 key={t.address}
                 className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
               >
-                <td className="px-3 py-2">
+                {/* Frozen while the rest of the row scrolls sideways — without
+                    an anchor column the numbers stop meaning anything on a
+                    phone. `bg-background` (and the elevated variant on hover)
+                    keeps the scrolled columns from showing through. */}
+                <td className="sticky left-0 z-10 w-[150px] bg-background px-3 py-2 group-hover:bg-surface-elevated sm:w-[168px]">
                   <Link
                     to="/token/$address"
                     params={{ address: t.address }}
@@ -637,11 +641,11 @@ export function TokenTable({
                       <Zap className="h-3 w-3" /> Buy
                     </button>
                     <a
-                      href={BASE_BOT_URL}
+                      href={baseBotUrl(t.address)}
                       target="_blank"
                       rel="noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      title="Open BaseBot on Telegram"
+                      title={`Trade ${t.symbol} on BaseBot`}
                       className="inline-flex items-center rounded-md border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
                     >
                       <Send className="h-3 w-3" />
