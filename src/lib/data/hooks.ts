@@ -406,9 +406,18 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   });
 }
 
+/** A holder counts as a whale once their stake in the token is worth this much. */
+export const WHALE_HOLDER_USD = 5_000;
+
 export interface TokenInsight {
   /** Deployer's balance as a % of supply. */
   devHoldingPct?: number;
+  /**
+   * Holders whose stake is worth WHALE_HOLDER_USD or more. Counted from the
+   * holders page we already fetch, so it costs nothing extra — but it is a
+   * FLOOR, not a total: it can only see the holders that page returns.
+   */
+  whaleHolders?: number;
   /** Combined share of the ten largest holders. */
   top10Pct?: number;
   /** DexScreener paid listing — undefined when the chain isn't indexed there. */
@@ -438,6 +447,7 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
       address: t.address,
       decimals: t.decimals ?? 18,
       totalSupply: t.totalSupply as number,
+      price: t.price,
     }));
   const key = targets.map((t) => t.address).join(",");
 
@@ -452,7 +462,9 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
       await Promise.all(
         targets.map(async (t) => {
           const [holders, creator, paid] = await Promise.all([
-            fetchTokenHolders(chain, t.address, t.decimals, t.totalSupply, 10).catch(() => []),
+            // 50 rather than 10: the whale count is only as good as the slice
+            // it can see, and this is the same single request either way.
+            fetchTokenHolders(chain, t.address, t.decimals, t.totalSupply, 50).catch(() => []),
             fetchAddressCreator(chain, t.address).catch(() => ""),
             fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
           ]);
@@ -460,8 +472,13 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
           const insight: TokenInsight = { dexPaid: paid.paid, dexUnsupported: paid.unsupported };
 
           if (holders.length) {
-            const sum = holders.reduce((s, h) => s + h.pct, 0);
+            const sum = holders.slice(0, 10).reduce((s, h) => s + h.pct, 0);
             if (sum > 0) insight.top10Pct = Math.min(100, sum);
+            if (t.price > 0) {
+              insight.whaleHolders = holders.filter(
+                (h) => h.amount * t.price >= WHALE_HOLDER_USD,
+              ).length;
+            }
           }
 
           if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator)) {

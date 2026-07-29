@@ -3,10 +3,11 @@ import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
-import { useSourceCounts, type TokenInsight } from "@/lib/data/hooks";
+import { useSourceCounts, WHALE_HOLDER_USD, type TokenInsight } from "@/lib/data/hooks";
 import { baseBotUrl } from "@/config/links";
 import { venueLogo } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
+import { WhaleIcon } from "@/components/brand/WhaleIcon";
 import { useChain } from "@/lib/chain-context";
 import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
@@ -169,6 +170,35 @@ function SourceReadout() {
       title={entries.map(([k, n]) => `${k}: ${n}`).join(" · ") + (c.note ? ` — ${c.note}` : "")}
     >
       {entries.length - dead.length}/{entries.length} sources
+    </span>
+  );
+}
+
+/**
+ * How many holders sit on a five-figure position in this token.
+ *
+ * Blank until the holders page has been read — an unchecked token must not read
+ * as "no whales". Zero shows as a dimmed icon rather than "0" so a column of
+ * them stays quiet, and any count above zero is highlighted.
+ */
+function WhaleHolders({ count }: { count?: number }) {
+  if (count == null) {
+    return <WhaleIcon className="h-3 w-3 text-muted-foreground/20" />;
+  }
+  const has = count > 0;
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[11px] ${
+        has ? "text-primary" : "text-muted-foreground/30"
+      }`}
+      title={
+        has
+          ? `${count} holder${count === 1 ? "" : "s"} with $${(WHALE_HOLDER_USD / 1000).toFixed(0)}k+ in this token (of the holders indexed)`
+          : `No holder above $${(WHALE_HOLDER_USD / 1000).toFixed(0)}k in the indexed holders`
+      }
+    >
+      <WhaleIcon className="h-3 w-3" />
+      {has && <span className="num">{count}</span>}
     </span>
   );
 }
@@ -585,8 +615,11 @@ export function TokenTable({
                 {/* Buys/sells over holders. */}
                 <td className="px-1.5 py-2 text-right">
                   <Txns24h buys={t.buys24h} sells={t.sells24h} />
-                  <div className="num text-[11px] leading-tight text-muted-foreground">
-                    {t.holders > 0 ? formatNum(t.holders) : "—"}
+                  <div className="flex items-center justify-end gap-1.5 leading-tight">
+                    <span className="num text-[11px] text-muted-foreground">
+                      {t.holders > 0 ? formatNum(t.holders) : "—"}
+                    </span>
+                    <WhaleHolders count={insights?.[t.address]?.whaleHolders} />
                   </div>
                 </td>
                 {/* Dev holding over top-10 concentration. */}
