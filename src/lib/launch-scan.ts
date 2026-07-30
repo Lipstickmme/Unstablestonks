@@ -109,3 +109,80 @@ export const scanFactoryLaunches = createServerFn({ method: "GET" })
     }
     return out.sort((a, b) => b.blockNumber - a.blockNumber);
   });
+
+/**
+ * Who deployed a contract, from the explorer's contract module.
+ *
+ * Blockscout's /addresses/{hash} carries `creator_address_hash` and is tried
+ * first, but a young Blockscout deployment often doesn't have it — and without a
+ * deployer address there is no dev-holding figure at all. This is the free
+ * Etherscan V2 route to the same fact.
+ */
+export const fetchContractCreator = createServerFn({ method: "GET" })
+  .validator((raw: unknown): { chainId: number; address: string } => {
+    const o = (typeof raw === "object" && raw ? raw : {}) as Record<string, unknown>;
+    return { chainId: Number(o.chainId ?? 0), address: String(o.address ?? "") };
+  })
+  .handler(async ({ data }): Promise<string> => {
+    const key = apiKey();
+    const { chainId, address } = data;
+    if (!key || !chainId || !/^0x[0-9a-fA-F]{40}$/.test(address)) return "";
+
+    const url =
+      `https://api.etherscan.io/v2/api?chainid=${chainId}` +
+      `&module=contract&action=getcontractcreation&contractaddresses=${address}&apikey=${key}`;
+
+    const body = await proxiedFetchJson<{ result?: { contractCreator?: string }[] | string }>(url, {
+      timeoutMs: 12_000,
+      headers: { Accept: "application/json" },
+    });
+    if (!body || !Array.isArray(body.result)) return "";
+    const creator = body.result[0]?.contractCreator ?? "";
+    return /^0x[0-9a-fA-F]{40}$/.test(creator) ? creator.toLowerCase() : "";
+  });
+
+/**
+ * Transfer logs for a single token, same explorer route and for the same reason:
+ * the public RPCs on these chains routinely refuse eth_getLogs, and without logs
+ * there is no way to find out who holds a token when the explorer has no holders
+ * endpoint.
+ *
+ * Only the indexed parties are returned — `from` in topics[1], `to` in topics[2].
+ * The amount lives in the unindexed data field and is deliberately ignored:
+ * summing transfers to reconstruct a balance drifts, so the addresses are treated
+ * as candidates and their real balances are read with balanceOf.
+ */
+export const scanTransferLogs = createServerFn({ method: "GET" })
+  .validator((raw: unknown): { chainId: number; token: string; fromBlock: number } => {
+    const o = (typeof raw === "object" && raw ? raw : {}) as Record<string, unknown>;
+    return {
+      chainId: Number(o.chainId ?? 0),
+      token: String(o.token ?? ""),
+      fromBlock: Math.max(0, Number(o.fromBlock ?? 0)),
+    };
+  })
+  .handler(async ({ data }): Promise<{ from: string; to: string }[]> => {
+    const key = apiKey();
+    const { chainId, token, fromBlock } = data;
+    if (!key || !chainId || !/^0x[0-9a-fA-F]{40}$/.test(token)) return [];
+
+    const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+    const url =
+      `https://api.etherscan.io/v2/api?chainid=${chainId}` +
+      `&module=logs&action=getLogs&address=${token}&topic0=${TRANSFER}` +
+      `&fromBlock=${fromBlock}&toBlock=latest&page=1&offset=1000&apikey=${key}`;
+
+    const body = await proxiedFetchJson<{ result?: EsLog[] | string }>(url, {
+      timeoutMs: 12_000,
+      headers: { Accept: "application/json" },
+    });
+    if (!body || !Array.isArray(body.result)) return [];
+
+    const out: { from: string; to: string }[] = [];
+    for (const log of body.result) {
+      const from = topicToAddress(log.topics?.[1]);
+      const to = topicToAddress(log.topics?.[2]);
+      if (from || to) out.push({ from, to });
+    }
+    return out;
+  });

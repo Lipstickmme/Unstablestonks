@@ -105,7 +105,31 @@ interface XApiTweet {
   };
 }
 
-async function viaXApi(query: string, token: string): Promise<XSocialResult | null> {
+/**
+ * Why the official API didn't answer, in words the operator can act on.
+ *
+ * A silent null here is the worst failure mode this file has: a bearer token is
+ * set, nothing works, and the app looks like the crawler is at fault. The status
+ * code says exactly whose problem it is — and 403 in particular is not a bug to
+ * chase. Recent search is not in X's Free tier (Free is post-only); it needs
+ * Basic or above, or credits under the pay-per-use pricing that replaced the
+ * tiers for new developers in February 2026.
+ */
+function apiDiagnostic(status: number): string {
+  if (status === 401) {
+    return "X rejected the credential (401). The value must be the app's Bearer Token, not the API key or secret.";
+  }
+  if (status === 403) {
+    return "X returned 403: this project's access level doesn't include recent search. The Free tier is post-only — recent search needs Basic or higher (or purchased credits).";
+  }
+  if (status === 429) return "X rate limit reached (429). Heat fills in on the next cycle.";
+  return `X API returned ${status}.`;
+}
+
+async function viaXApi(
+  query: string,
+  token: string,
+): Promise<{ result: XSocialResult | null; diagnostic?: string }> {
   const url =
     "https://api.x.com/2/tweets/search/recent?max_results=50" +
     "&tweet.fields=public_metrics,created_at,author_id&expansions=author_id&user.fields=username" +
@@ -117,7 +141,7 @@ async function viaXApi(query: string, token: string): Promise<XSocialResult | nu
       signal: ctrl.signal,
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { result: null, diagnostic: apiDiagnostic(res.status) };
     const body = (await res.json()) as {
       data?: XApiTweet[];
       includes?: { users?: { id: string; username: string }[] };
@@ -144,18 +168,20 @@ async function viaXApi(query: string, token: string): Promise<XSocialResult | nu
     const impressions = posts.reduce((s, p) => s + p.impressions, 0);
     const engagement = posts.reduce((s, p) => s + p.engagement, 0);
     return {
-      query,
-      posts: posts.sort((a, b) => b.engagement - a.engagement),
-      mentions: posts.length,
-      uniqueAccounts: unique,
-      impressions,
-      engagement,
-      heat: heatFrom(posts.length, impressions, unique),
-      source: "x-api",
-      ok: true,
+      result: {
+        query,
+        posts: posts.sort((a, b) => b.engagement - a.engagement),
+        mentions: posts.length,
+        uniqueAccounts: unique,
+        impressions,
+        engagement,
+        heat: heatFrom(posts.length, impressions, unique),
+        source: "x-api",
+        ok: true,
+      },
     };
   } catch {
-    return null;
+    return { result: null, diagnostic: "Couldn't reach the X API (network or timeout)." };
   } finally {
     clearTimeout(t);
   }
@@ -209,6 +235,18 @@ async function viaNitter(
           engagement: 0,
         };
       });
+      // A dead or rate-limited mirror answers with a single boilerplate item
+      // ("no results", an error notice) that has nothing to do with the query.
+      // One item that never names what we searched for is that, not a mention —
+      // and counting it scores every token an identical 14.
+      const needle = query.toLowerCase();
+      if (
+        posts.length === 1 &&
+        !`${posts[0].text} ${posts[0].url}`.toLowerCase().includes(needle)
+      ) {
+        continue;
+      }
+
       const unique = new Set(posts.map((p) => p.handle)).size;
       return {
         query,
@@ -249,9 +287,39 @@ const RESERVED_HANDLES = new Set([
 /**
  * How far from a status link the contract address must appear for the link to
  * count as a post about it. One search result — snippet, title and URL — sits
- * comfortably inside this.
+ * comfortably inside this. Deliberately tighter than it looks: on a results page
+ * a 1500-character reach still spanned two neighbouring results, which is how a
+ * link with nothing to do with the query kept passing the check.
  */
-const PROXIMITY = 1500;
+const PROXIMITY = 600;
+
+/**
+ * Strip the parts of a search page that echo the query back at us.
+ *
+ * This is the whole reason the heat score was pinned at 14 for every token. A
+ * results page repeats the query in its own furniture — the search box's value,
+ * the <title>, the canonical link, "next page" hrefs, every tracking parameter —
+ * and each of those counts as the contract address appearing on the page. Pair
+ * one of those echoes with any unrelated x.com/<handle>/status/<id> link in the
+ * nav or sidebar and the proximity check passes, giving EVERY token exactly one
+ * mention from exactly one account: heatFrom(1, 0, 1) = 13.75, rounded to 14.
+ *
+ * After this, the address only survives where a result actually quotes it.
+ */
+function stripQueryEcho(html: string): string {
+  return (
+    html
+      // The query inside any URL's own query string: canonical, pagination,
+      // "search again", tracking.
+      .replace(/[?&](?:q|query|p|search|text|kw|wd|s)=[^"'&\s<>]*/gi, "")
+      // The search box, and the page title that repeats it.
+      .replace(/<title[\s\S]{0,600}?<\/title>/gi, " ")
+      .replace(/<input\b[^>]*>/gi, " ")
+      .replace(/<textarea\b[\s\S]{0,600}?<\/textarea>/gi, " ")
+      // og:/twitter: meta tags carry the query too.
+      .replace(/<meta\b[^>]*>/gi, " ")
+  );
+}
 
 /** X's snowflake epoch — post IDs carry their own creation timestamp. */
 const X_EPOCH = 1_288_834_974_657;
@@ -305,9 +373,14 @@ async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResul
   for (const url of sources) {
     if (budget.left <= 0) break;
     budget.left -= 2;
-    const text = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 1 });
-    if (!text || text.length < 200) continue;
+    const raw = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 1 });
+    if (!raw || raw.length < 200) continue;
+
+    const text = stripQueryEcho(raw);
     const haystack = text.toLowerCase();
+    // If the address doesn't survive the strip, the page never quoted it — it
+    // only echoed our own query. No evidence, no mentions.
+    if (!haystack.includes(needle)) continue;
 
     for (const m of text.matchAll(
       /(?:x|twitter|nitter[\w.-]*)\.com\/([A-Za-z0-9_]{2,15})\/status(?:es)?\/(\d{15,25})/gi,
@@ -400,9 +473,11 @@ function firstOk<T>(promises: Promise<T | null>[]): Promise<T | null> {
 
 async function crawlOne(query: string, budget: Budget): Promise<XSocialResult> {
   const bearer = bearerToken();
+  let apiNote: string | undefined;
   if (bearer) {
-    const r = await viaXApi(query, bearer);
-    if (r) return r;
+    const { result, diagnostic } = await viaXApi(query, bearer);
+    if (result) return result;
+    apiNote = diagnostic;
   }
 
   const instances =
@@ -415,7 +490,11 @@ async function crawlOne(query: string, budget: Budget): Promise<XSocialResult> {
   // through six fetch hops — consumed the whole deadline before the open crawl
   // ever ran, which is why the panel reported "timed out" instead of a result.
   const found = await firstOk([viaOpenCrawl(query, budget), viaNitter(query, instances, budget)]);
-  if (found) return found;
+  if (found) {
+    // Say the API was tried and why it didn't answer, even on a good crawl —
+    // otherwise a permanently-degraded source looks like the working one.
+    return apiNote ? { ...found, note: `${found.note ?? ""} ${apiNote}`.trim() } : found;
+  }
 
   return {
     query,
@@ -427,11 +506,11 @@ async function crawlOne(query: string, budget: Budget): Promise<XSocialResult> {
     heat: 0,
     source: "unavailable",
     ok: false,
-    note: bearer
-      ? "No recent posts found for this contract."
-      : budget.left <= 0
+    note:
+      apiNote ??
+      (budget.left <= 0
         ? "Crawl budget spent before a source answered. Add X_BEARER_TOKEN for reliable data."
-        : "No X posts found for this contract, and no bearer token is set. Add X_BEARER_TOKEN for authoritative reach data.",
+        : "No X posts found for this contract, and no bearer token is set. Add X_BEARER_TOKEN for authoritative reach data."),
   };
 }
 

@@ -710,10 +710,10 @@ export function TokenTable({
                         target="_blank"
                         rel="noreferrer"
                         onClick={(e) => e.stopPropagation()}
-                        title={`Trade ${t.symbol} on BaseBot`}
-                        className="inline-flex items-center rounded-md border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                        title={`Buy ${t.symbol} on BasedBot`}
+                        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
                       >
-                        <Send className="h-3 w-3" />
+                        <Send className="h-3 w-3" /> Buy on BasedBot
                       </a>
                     </div>
                   </td>

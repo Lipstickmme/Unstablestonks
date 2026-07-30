@@ -32,6 +32,8 @@ import {
 } from "./geckoterminal";
 import { getErc20Balance, getErc20Meta, getNativeBalance, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
+import { deriveTopHolders } from "./holders";
+import { fetchContractCreator } from "../launch-scan";
 import { fetchExplorerStats } from "../explorer-stats";
 import { readCache, writeCache } from "../persist";
 import { readLogos, readSnapshot, writeLogos, writeSnapshot } from "../store";
@@ -508,22 +510,32 @@ export interface TokenInsight {
  * holds, how concentrated the top ten are, and whether the team paid DexScreener
  * for enhanced token info.
  *
- * Dev holding is read straight off the chain — the creator address from the
- * explorer, then a live `balanceOf` — rather than looked up in a top-N holders
- * page, so a deployer sitting outside the top ten is still counted correctly.
- * Runs on its own slow cycle over the top 8 rows so it never competes with the
- * market data feed.
+ * Every figure has two routes to it, because on these chains the first one is
+ * regularly missing and a single source meant a permanently blank column:
+ *
+ *   supply    the row's, else read from the contract. This was the silent
+ *             killer — the whole hook used to skip any token without a supply
+ *             figure, and GeckoTerminal (the source most rows come from) does
+ *             not report one, so most of the list was never even attempted.
+ *   deployer  Blockscout's creator field, else the explorer's contract module.
+ *   holders   Blockscout's holders page, else derived from the token's own
+ *             Transfer logs with balances read on chain (see holders.ts).
+ *
+ * Dev holding is always a live `balanceOf` on the deployer rather than a lookup
+ * in a top-N page, so a deployer sitting outside the top ten is still counted.
+ * Runs on its own slow cycle so it never competes with the market data feed.
  */
+const MAX_INSIGHT_TOKENS = 12;
+
 export function useTokenInsights(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const targets = (tokens ?? [])
-    .filter((t) => t.totalSupply && t.totalSupply > 0)
     .sort((a, b) => b.vol24h - a.vol24h)
-    .slice(0, 8)
+    .slice(0, MAX_INSIGHT_TOKENS)
     .map((t) => ({
       address: t.address,
       decimals: t.decimals ?? 18,
-      totalSupply: t.totalSupply as number,
+      totalSupply: t.totalSupply ?? 0,
       price: t.price,
     }));
   const key = targets.map((t) => t.address).join(",");
@@ -538,15 +550,42 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
       const out: Record<string, TokenInsight> = {};
       await Promise.all(
         targets.map(async (t) => {
-          const [holders, creator, paid] = await Promise.all([
+          // Supply gates both distribution figures, so resolve it first. The
+          // contract is authoritative and the read is cached for the session.
+          let supply = t.totalSupply;
+          if (supply <= 0) {
+            const meta = await getErc20Meta(chainKey, t.address as `0x${string}`).catch(() => null);
+            supply = meta?.totalSupply ?? 0;
+          }
+
+          const [bsHolders, creator, paid] = await Promise.all([
             // 50 rather than 10: the whale count is only as good as the slice
             // it can see, and this is the same single request either way.
-            fetchTokenHolders(chain, t.address, t.decimals, t.totalSupply, 50).catch(() => []),
-            fetchAddressCreator(chain, t.address).catch(() => ""),
+            supply > 0
+              ? fetchTokenHolders(chain, t.address, t.decimals, supply, 50).catch(() => [])
+              : Promise.resolve([]),
+            fetchAddressCreator(chain, t.address)
+              .catch(() => "")
+              .then((c) =>
+                /^0x[0-9a-fA-F]{40}$/.test(c)
+                  ? c
+                  : fetchContractCreator({
+                      data: { chainId: chain.id, address: t.address },
+                    }).catch(() => ""),
+              ),
             fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
           ]);
 
           const insight: TokenInsight = { dexPaid: paid.paid, dexUnsupported: paid.unsupported };
+
+          // Explorer first; the chain itself when the explorer has nothing.
+          const holders = bsHolders.length
+            ? bsHolders
+            : supply > 0
+              ? await deriveTopHolders(chainKey, chain, t.address, t.decimals, supply, 50).catch(
+                  () => [],
+                )
+              : [];
 
           if (holders.length) {
             const sum = holders.slice(0, 10).reduce((s, h) => s + h.pct, 0);
@@ -558,16 +597,14 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
             }
           }
 
-          if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator)) {
+          if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator) && supply > 0) {
             const bal = await getErc20Balance(
               chainKey,
               t.address as `0x${string}`,
               creator as `0x${string}`,
               t.decimals,
             ).catch(() => 0);
-            if (bal >= 0 && t.totalSupply > 0) {
-              insight.devHoldingPct = Math.min(100, (bal / t.totalSupply) * 100);
-            }
+            insight.devHoldingPct = Math.min(100, (bal / supply) * 100);
           }
 
           out[t.address] = insight;

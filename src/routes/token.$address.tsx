@@ -359,7 +359,7 @@ function TokenDetail() {
                   rel="noreferrer"
                   className="flex items-center justify-center gap-2 rounded-xl border border-border bg-surface py-2.5 text-xs font-medium transition-colors hover:border-primary/50 hover:bg-surface-elevated"
                 >
-                  <Send className="h-3.5 w-3.5" /> Buy {token.symbol} on BaseBot
+                  <Send className="h-3.5 w-3.5" /> Buy {token.symbol} on BasedBot
                 </a>
                 <XSocialPanel
                   address={token.address}
