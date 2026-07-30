@@ -42,6 +42,8 @@ export interface XSocialResult {
   source: "x-api" | "nitter" | "crawler" | "unavailable";
   ok: boolean;
   note?: string;
+  /** Which free crawlers actually contributed posts, when source is "crawler". */
+  engines?: string[];
 }
 
 /**
@@ -203,9 +205,11 @@ async function viaNitter(
   instances: string[],
   budget: Budget,
 ): Promise<XSocialResult | null> {
-  // Two mirrors, two hops each: most public Nitter instances are long dead, and
-  // exhausting the list is what used to burn the entire crawl budget.
-  for (const base of instances.slice(0, 2)) {
+  // Nitter mirrors are the second free family, and they fail FAST when dead —
+  // a dead host is a connection error, not a slow page — so walking four costs
+  // little while doubling the chance one is alive. Exhausting all seven is what
+  // used to burn the entire crawl budget, hence the cap.
+  for (const base of instances.slice(0, 4)) {
     if (budget.left <= 0) return null;
     budget.left -= 2;
     try {
@@ -341,39 +345,67 @@ function tsFromStatusId(id: string): number | null {
 }
 
 /**
- * Last-resort free crawler: read X's own live-search page and public search
- * engines scoped to x.com through the reader proxy, and collect the DISTINCT
- * posts that link to the contract address.
+ * Free crawlers, in the order they're tried.
+ *
+ * Every one is key-less and public, and every one is unreliable in its own way:
+ * DuckDuckGo rate-limits by IP, Bing serves a JS challenge to some regions,
+ * SearXNG instances come and go, Mojeek has a small index. So the list is a
+ * FALLBACK CHAIN, not a favourite plus spares — a source that fails, blocks, or
+ * finds nothing costs one attempt and the next takes over. Nothing here depends
+ * on a paid tier, and any single one of them going dark is survivable.
+ *
+ * They are ordered by how likely they are to have indexed a days-old crypto
+ * post: DuckDuckGo's lite endpoint first (plain HTML, no challenge, generous),
+ * then the general engines, then the SearXNG instances, which aggregate several
+ * engines at once and are the best last resort.
+ */
+const CRAWLERS: { name: string; url: (q: string) => string }[] = [
+  { name: "duckduckgo-lite", url: (q) => `https://lite.duckduckgo.com/lite/?q=${q}+site%3Ax.com` },
+  { name: "duckduckgo", url: (q) => `https://duckduckgo.com/html/?q=${q}+site%3Ax.com` },
+  { name: "bing", url: (q) => `https://www.bing.com/search?q=${q}+site%3Ax.com` },
+  { name: "mojeek", url: (q) => `https://www.mojeek.com/search?q=${q}+site%3Ax.com` },
+  { name: "ecosia", url: (q) => `https://www.ecosia.org/search?q=${q}+site%3Ax.com` },
+  { name: "marginalia", url: (q) => `https://search.marginalia.nu/search?query=${q}` },
+  { name: "searx-be", url: (q) => `https://searx.be/search?q=${q}+site%3Ax.com` },
+  { name: "searx-tiekoetter", url: (q) => `https://searxng.site/search?q=${q}+site%3Ax.com` },
+  { name: "priv-au", url: (q) => `https://priv.au/search?q=${q}+site%3Ax.com` },
+];
+
+/** Enough distinct posts that walking further engines isn't worth the budget. */
+const ENOUGH_POSTS = 5;
+
+/**
+ * Free crawl: search engines scoped to x.com, read through the CORS/reader
+ * proxies, collecting the DISTINCT posts that link to the contract address.
  *
  * A post only counts if we find a real `x.com/<handle>/status/<id>` link whose
- * snowflake ID decodes to a plausible timestamp. We deliberately do NOT count
- * literal occurrences of the address in the page text — every search page echoes
- * the query back in its own markup (search box, title, canonical URL), which
- * previously scored one phantom mention for every token and pinned the heat
- * score at a constant value. No links found now means no signal, and the panel
- * says so.
+ * snowflake ID decodes to a plausible timestamp, in a result that actually
+ * quotes the address. Literal occurrences of the address in page text are NOT
+ * counted: every search page echoes the query back in its own markup, which is
+ * what pinned the score at a constant 14 for every token. No links found means
+ * no signal, and the panel says so.
  *
- * All sources are read and unioned rather than short-circuiting on the first
- * hit, so the count reflects everything reachable. Reach/impressions stay 0
- * (unknowable without the API) and the UI reports the source honestly.
+ * Sources are unioned rather than stopping at the first that answers — the same
+ * post found on two engines counts once, and more engines means better coverage
+ * — but the walk stops early once there is enough signal, so a token everyone is
+ * posting about doesn't burn the whole budget proving it.
  */
 async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResult | null> {
   const encoded = encodeURIComponent(`"${query}"`);
-  const sources = [
-    `https://duckduckgo.com/html/?q=${encoded}+site%3Ax.com`,
-    `https://lite.duckduckgo.com/lite/?q=${encoded}+site%3Atwitter.com`,
-    `https://www.bing.com/search?q=${encoded}+site%3Ax.com`,
-  ];
 
   // id → post. Keyed by status id so the same post seen on two engines counts once.
   const found = new Map<string, XPost>();
-
+  const engines: string[] = [];
   const needle = query.toLowerCase();
 
-  for (const url of sources) {
+  for (const crawler of CRAWLERS) {
     if (budget.left <= 0) break;
+    if (found.size >= ENOUGH_POSTS) break;
     budget.left -= 2;
-    const raw = await proxiedFetchText(url, { timeoutMs: 6_000, hops: 1 });
+
+    const raw = await proxiedFetchText(crawler.url(encoded), { timeoutMs: 6_000, hops: 1 });
+    // Unreachable, blocked, or a challenge page — that's what the next crawler
+    // is for.
     if (!raw || raw.length < 200) continue;
 
     const text = stripQueryEcho(raw);
@@ -382,6 +414,7 @@ async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResul
     // only echoed our own query. No evidence, no mentions.
     if (!haystack.includes(needle)) continue;
 
+    let addedHere = 0;
     for (const m of text.matchAll(
       /(?:x|twitter|nitter[\w.-]*)\.com\/([A-Za-z0-9_]{2,15})\/status(?:es)?\/(\d{15,25})/gi,
     )) {
@@ -409,7 +442,9 @@ async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResul
         impressions: 0,
         engagement: 0,
       });
+      addedHere++;
     }
+    if (addedHere) engines.push(crawler.name);
   }
 
   if (found.size === 0) return null;
@@ -426,7 +461,8 @@ async function viaOpenCrawl(query: string, budget: Budget): Promise<XSocialResul
     heat: heatFrom(posts.length, 0, unique),
     source: "crawler",
     ok: true,
-    note: "Posts found by public crawl — reach unavailable without X_BEARER_TOKEN.",
+    engines,
+    note: `Found by free crawl (${engines.join(", ")}) — reach unavailable without an X API tier that includes search.`,
   };
 }
 

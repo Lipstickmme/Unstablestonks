@@ -42,6 +42,19 @@ export function kvEnabled(): boolean {
   return credentials() !== null;
 }
 
+/**
+ * Which env var supplied the URL, or undefined when none did.
+ *
+ * Reported by the health check: "credentials missing" and "credentials present
+ * under the alias" are different problems with the same symptom, and knowing
+ * which name was picked up turns a mystery into a one-line fix.
+ */
+export function kvSourceName(): string | undefined {
+  if (env("UPSTASH_REDIS_REST_URL")) return "UPSTASH_REDIS_REST_URL";
+  if (env("KV_REST_API_URL")) return "KV_REST_API_URL";
+  return undefined;
+}
+
 type Command = (string | number)[];
 
 /** Run one Redis command. Returns null when unconfigured or on any failure. */

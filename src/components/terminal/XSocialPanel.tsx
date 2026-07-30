@@ -36,9 +36,15 @@ export function XSocialPanel({
           <h3 className="text-sm font-medium">X · social intelligence</h3>
         </div>
         {data?.source && data.source !== "unavailable" && (
-          <span className="chip !py-0 text-[9px]">
+          // Name the crawler that actually answered: with a fallback chain,
+          // "crawler" alone doesn't say which of nine is carrying the result.
+          <span className="chip !py-0 text-[9px]" title={data.engines?.join(", ")}>
             via{" "}
-            {data.source === "x-api" ? "X API" : data.source === "nitter" ? "Nitter" : "crawler"}
+            {data.source === "x-api"
+              ? "X API"
+              : data.source === "nitter"
+                ? "Nitter"
+                : (data.engines?.[0] ?? "crawler")}
           </span>
         )}
       </div>

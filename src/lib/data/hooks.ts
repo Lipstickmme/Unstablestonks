@@ -7,7 +7,6 @@ import {
   fetchAddressCreator,
   fetchChainStats,
   fetchTokenDetail,
-  fetchTokenHolders,
   fetchTokens,
   fetchTokenTransfers,
   fetchWalletTransfers,
@@ -32,7 +31,8 @@ import {
 } from "./geckoterminal";
 import { getErc20Balance, getErc20Meta, getNativeBalance, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
-import { deriveTopHolders } from "./holders";
+import { getTokenHolders } from "./holders";
+import { sharedBalances } from "./balances";
 import { fetchContractCreator } from "../launch-scan";
 import { fetchExplorerStats } from "../explorer-stats";
 import { readCache, writeCache } from "../persist";
@@ -200,6 +200,51 @@ function foldRow(into: TokenRow, extra: TokenRow): void {
  * Sources 4 and 5 arrive unpriced and pick up market data from 1/2 as indexers
  * catch up — an unpriced row is shown as "—", never as a fabricated zero.
  */
+/**
+ * Persist the merged list — once, however many components asked for it.
+ *
+ * `useTokens` is called from the terminal, the search box, the token page and
+ * the whale panel's price lookup. The queries behind it are shared by key, but
+ * the merge that follows runs per caller, and it used to write localStorage and
+ * publish to the shared store from inside that merge — so four components on one
+ * screen meant four snapshot writes and four logo writes of identical data,
+ * every refresh, against a free tier measured in commands per month.
+ *
+ * The guard is on the content, not the caller: the same rows publish once.
+ */
+const published = new Map<ChainKey, { sig: string; ts: number }>();
+const PUBLISH_MIN_GAP = 30_000;
+
+function publishTokens(
+  chainKey: ChainKey,
+  cacheKey: string,
+  rows: TokenRow[],
+  live: boolean,
+  freshLogos: Record<string, string>,
+): void {
+  const sig = `${rows.length}:${rows[0]?.address ?? ""}:${rows[0]?.vol24h ?? 0}`;
+  const last = published.get(chainKey);
+  if (last && last.sig === sig && Date.now() - last.ts < PUBLISH_MIN_GAP) return;
+  published.set(chainKey, { sig, ts: Date.now() });
+
+  writeCache(cacheKey, rows);
+
+  // Publish for the next cold visitor — but only when the live sources actually
+  // answered. Echoing a snapshot back to itself would keep it alive forever.
+  if (live) {
+    void writeSnapshot({
+      data: { chain: chainKey, json: JSON.stringify(rows.slice(0, 120)) },
+    }).catch(() => {});
+  }
+  // Only when artwork is actually new; republishing an unchanged map would
+  // spend the store's command budget on nothing.
+  if (Object.keys(freshLogos).length) {
+    void writeLogos({ data: { chain: chainKey, json: JSON.stringify(freshLogos) } }).catch(
+      () => {},
+    );
+  }
+}
+
 export function useTokens() {
   const { chain, chainKey } = useChain();
   const cacheKey = `tokens.${chainKey}`;
@@ -348,21 +393,7 @@ export function useTokens() {
     });
 
     if (rows.length) {
-      writeCache(cacheKey, rows);
-      // Publish for the next cold visitor. Only when the live sources actually
-      // answered — echoing a snapshot back would keep it alive forever.
-      if (market.length) {
-        void writeSnapshot({
-          data: { chain: chainKey, json: JSON.stringify(rows.slice(0, 120)) },
-        }).catch(() => {});
-      }
-      // Only when something is actually new — re-publishing the same map every
-      // merge would spend the store's command budget on nothing.
-      if (Object.keys(freshLogos).length) {
-        void writeLogos({
-          data: { chain: chainKey, json: JSON.stringify(freshLogos) },
-        }).catch(() => {});
-      }
+      publishTokens(chainKey, cacheKey, rows, market.length > 0, freshLogos);
       return {
         data: rows,
         isLoading: false,
@@ -527,6 +558,92 @@ export interface TokenInsight {
  */
 const MAX_INSIGHT_TOKENS = 12;
 
+/** Per-token insight, shared by every caller. See `sharedInsight`. */
+const INSIGHT_TTL = 5 * 60_000;
+const insightCache = new Map<string, { ts: number; value: TokenInsight }>();
+const insightInFlight = new Map<string, Promise<TokenInsight>>();
+
+/**
+ * One token's insight, computed at most once per TTL however many callers ask.
+ *
+ * The list wants twelve of these and the token page wants one, and before this
+ * they were two separate queries with different keys — so opening a token from
+ * the table re-fetched its holders, its deployer and its DexScreener status even
+ * though the row on screen had all three a moment earlier. The cache is keyed by
+ * chain and address, which is what the data is actually about; who asked for it
+ * is not part of its identity.
+ */
+async function sharedInsight(
+  chain: ChainConfig,
+  chainKey: ChainKey,
+  t: { address: string; decimals: number; totalSupply: number; price: number },
+): Promise<TokenInsight> {
+  const cacheKey = `${chainKey}:${t.address.toLowerCase()}`;
+  const hit = insightCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < INSIGHT_TTL) return hit.value;
+  const running = insightInFlight.get(cacheKey);
+  if (running) return running;
+
+  const job = (async (): Promise<TokenInsight> => {
+    // Supply gates both distribution figures, so resolve it first. The contract
+    // is authoritative and the read is cached for the session.
+    let supply = t.totalSupply;
+    if (supply <= 0) {
+      const meta = await getErc20Meta(chainKey, t.address as `0x${string}`).catch(() => null);
+      supply = meta?.totalSupply ?? 0;
+    }
+
+    const [holders, creator, paid] = await Promise.all([
+      // The shared holders lookup — explorer first, chain second — so the token
+      // page's activity panel and this share one result.
+      supply > 0
+        ? getTokenHolders(chainKey, chain, t.address, t.decimals, supply, 50).catch(() => [])
+        : Promise.resolve([]),
+      fetchAddressCreator(chain, t.address)
+        .catch(() => "")
+        .then((c) =>
+          /^0x[0-9a-fA-F]{40}$/.test(c)
+            ? c
+            : fetchContractCreator({ data: { chainId: chain.id, address: t.address } }).catch(
+                () => "",
+              ),
+        ),
+      fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
+    ]);
+
+    const insight: TokenInsight = { dexPaid: paid.paid, dexUnsupported: paid.unsupported };
+
+    if (holders.length) {
+      const sum = holders.slice(0, 10).reduce((s, h) => s + h.pct, 0);
+      if (sum > 0) insight.top10Pct = Math.min(100, sum);
+      if (t.price > 0) {
+        insight.whaleHolders = holders.filter((h) => h.amount * t.price >= WHALE_HOLDER_USD).length;
+      }
+    }
+
+    if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator) && supply > 0) {
+      const bal = await getErc20Balance(
+        chainKey,
+        t.address as `0x${string}`,
+        creator as `0x${string}`,
+        t.decimals,
+      ).catch(() => 0);
+      insight.devHoldingPct = Math.min(100, (bal / supply) * 100);
+    }
+
+    return insight;
+  })();
+
+  insightInFlight.set(cacheKey, job);
+  try {
+    const value = await job;
+    insightCache.set(cacheKey, { ts: Date.now(), value });
+    return value;
+  } finally {
+    insightInFlight.delete(cacheKey);
+  }
+}
+
 export function useTokenInsights(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
   const targets = (tokens ?? [])
@@ -548,68 +665,10 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
     retry: 0,
     queryFn: async () => {
       const out: Record<string, TokenInsight> = {};
-      await Promise.all(
-        targets.map(async (t) => {
-          // Supply gates both distribution figures, so resolve it first. The
-          // contract is authoritative and the read is cached for the session.
-          let supply = t.totalSupply;
-          if (supply <= 0) {
-            const meta = await getErc20Meta(chainKey, t.address as `0x${string}`).catch(() => null);
-            supply = meta?.totalSupply ?? 0;
-          }
-
-          const [bsHolders, creator, paid] = await Promise.all([
-            // 50 rather than 10: the whale count is only as good as the slice
-            // it can see, and this is the same single request either way.
-            supply > 0
-              ? fetchTokenHolders(chain, t.address, t.decimals, supply, 50).catch(() => [])
-              : Promise.resolve([]),
-            fetchAddressCreator(chain, t.address)
-              .catch(() => "")
-              .then((c) =>
-                /^0x[0-9a-fA-F]{40}$/.test(c)
-                  ? c
-                  : fetchContractCreator({
-                      data: { chainId: chain.id, address: t.address },
-                    }).catch(() => ""),
-              ),
-            fetchDexPaid(chain, t.address).catch((): DexPaidStatus => ({ types: [] })),
-          ]);
-
-          const insight: TokenInsight = { dexPaid: paid.paid, dexUnsupported: paid.unsupported };
-
-          // Explorer first; the chain itself when the explorer has nothing.
-          const holders = bsHolders.length
-            ? bsHolders
-            : supply > 0
-              ? await deriveTopHolders(chainKey, chain, t.address, t.decimals, supply, 50).catch(
-                  () => [],
-                )
-              : [];
-
-          if (holders.length) {
-            const sum = holders.slice(0, 10).reduce((s, h) => s + h.pct, 0);
-            if (sum > 0) insight.top10Pct = Math.min(100, sum);
-            if (t.price > 0) {
-              insight.whaleHolders = holders.filter(
-                (h) => h.amount * t.price >= WHALE_HOLDER_USD,
-              ).length;
-            }
-          }
-
-          if (creator && /^0x[0-9a-fA-F]{40}$/.test(creator) && supply > 0) {
-            const bal = await getErc20Balance(
-              chainKey,
-              t.address as `0x${string}`,
-              creator as `0x${string}`,
-              t.decimals,
-            ).catch(() => 0);
-            insight.devHoldingPct = Math.min(100, (bal / supply) * 100);
-          }
-
-          out[t.address] = insight;
-        }),
-      );
+      const values = await Promise.all(targets.map((t) => sharedInsight(chain, chainKey, t)));
+      targets.forEach((t, i) => {
+        out[t.address] = values[i];
+      });
       return out;
     },
   });
@@ -641,18 +700,12 @@ export function useTraderHoldings(
     refetchInterval: 120_000,
     retry: 0,
     queryFn: async () => {
+      // Shared with whale watch: same token, same wallets, one set of reads.
+      const balances = await sharedBalances(chainKey, token as string, decimals, targets);
       const out: Record<string, number> = {};
-      const balances = await Promise.all(
-        targets.map((w) =>
-          getErc20Balance(chainKey, token as `0x${string}`, w as `0x${string}`, decimals).catch(
-            () => 0,
-          ),
-        ),
-      );
-      targets.forEach((w, i) => {
-        const bal = balances[i];
-        if (bal > 0) out[w.toLowerCase()] = (bal / totalSupply) * 100;
-      });
+      for (const [wallet, bal] of Object.entries(balances)) {
+        out[wallet] = (bal / totalSupply) * 100;
+      }
       return out;
     },
   });
@@ -700,18 +753,27 @@ export function useTraderBalances(wallets: string[], trades: TradeEvent[]) {
     refetchInterval: 120_000,
     retry: 0,
     queryFn: async () => {
+      // Group by token so each one is a single batched read, then price it —
+      // the shared cache means a wallet already valued by the live-trades panel
+      // costs nothing here.
+      const byToken = new Map<string, { decimals: number; price: number; wallets: string[] }>();
+      for (const w of targets) {
+        const p = pairs.get(w);
+        if (!p) continue;
+        const group = byToken.get(p.token) ?? {
+          decimals: p.decimals,
+          price: p.price,
+          wallets: [],
+        };
+        group.wallets.push(w);
+        byToken.set(p.token, group);
+      }
+
       const out: Record<string, number> = {};
       await Promise.all(
-        targets.map(async (w) => {
-          const p = pairs.get(w);
-          if (!p) return;
-          const bal = await getErc20Balance(
-            chainKey,
-            p.token as `0x${string}`,
-            w as `0x${string}`,
-            p.decimals,
-          ).catch(() => 0);
-          if (bal > 0) out[w] = bal * p.price;
+        [...byToken.entries()].map(async ([token, g]) => {
+          const balances = await sharedBalances(chainKey, token, g.decimals, g.wallets);
+          for (const [wallet, bal] of Object.entries(balances)) out[wallet] = bal * g.price;
         }),
       );
       return out;
@@ -861,10 +923,12 @@ export function useWalletPortfolio(
 
       const [nativeBalance, balances] = await Promise.all([
         getNativeBalance(chainKey, owner).catch(() => 0),
+        // One entry per token through the shared balance cache, so a token the
+        // whale or live-trades panels already valued for this wallet is free.
         Promise.all(
           targets.map((t) =>
-            getErc20Balance(chainKey, t.address as `0x${string}`, owner, t.decimals ?? 18).catch(
-              () => 0,
+            sharedBalances(chainKey, t.address, t.decimals ?? 18, [owner]).then(
+              (m) => m[owner.toLowerCase()] ?? 0,
             ),
           ),
         ),
@@ -1108,7 +1172,11 @@ export function useTokenActivity(
     queryFn: async () => {
       const decimals = token?.decimals ?? 18;
       const [holders, transfers, dexTrades] = await Promise.all([
-        fetchTokenHolders(chain, addr, decimals, token?.totalSupply ?? 0, 10).catch(() => []),
+        // Same shared lookup the distribution columns use, so opening a token
+        // from the table doesn't re-ask who holds it.
+        getTokenHolders(chainKey, chain, addr, decimals, token?.totalSupply ?? 0, 10).catch(
+          () => [],
+        ),
         fetchTokenTransfers(chain, addr, token?.symbol ?? "?", token?.price ?? 0).catch(
           () => [] as TradeEvent[],
         ),

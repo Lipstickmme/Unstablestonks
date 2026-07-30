@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { kvCommand, kvEnabled, kvGetJson, kvIncr, kvPipeline, kvSetJson } from "./kv";
+import { kvCommand, kvEnabled, kvGetJson, kvIncr, kvPipeline, kvSetJson, kvSourceName } from "./kv";
 import { WHITELIST_CAP } from "./whitelist";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -33,6 +33,85 @@ const key = {
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+export interface StoreStatus {
+  /** Credentials are present in the environment. */
+  configured: boolean;
+  /** A round trip actually succeeded — the only proof that it works. */
+  reachable: boolean;
+  /** Which env var name supplied the URL, for diagnosing a naming mismatch. */
+  via?: string;
+  /** Round-trip time in ms. */
+  ms?: number;
+  /** Keys currently held, so you can see the app writing to it. */
+  snapshots?: number;
+  whitelist?: number;
+  visits?: number;
+  detail: string;
+}
+
+/**
+ * Is the shared store actually connected?
+ *
+ * Credentials being set proves nothing — a wrong token, a deleted database or a
+ * region outage all look identical from the code, and every call in this file
+ * fails silently by design so the app keeps working. This does a real round trip
+ * and reports what came back, so "is the backend live" is answerable from the
+ * screen instead of inferred.
+ */
+export const storeStatus = createServerFn({ method: "GET" }).handler(
+  async (): Promise<StoreStatus> => {
+    const via = kvSourceName();
+    if (!via) {
+      return {
+        configured: false,
+        reachable: false,
+        detail:
+          "No credentials found. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (or the KV_REST_API_* aliases) and redeploy.",
+      };
+    }
+
+    const started = Date.now();
+    const pong = await kvCommand<string>(["PING"]);
+    const ms = Date.now() - started;
+
+    if (pong == null) {
+      return {
+        configured: true,
+        reachable: false,
+        via,
+        ms,
+        detail: `Credentials are set (from ${via}) but the store did not answer. Check the token matches the database and that it hasn't been deleted.`,
+      };
+    }
+
+    // What it actually holds right now — the difference between "connected" and
+    // "connected and being used".
+    const counts = await kvPipeline<number>([
+      ["EXISTS", key.snapshot("stable")],
+      ["EXISTS", key.snapshot("robinhood")],
+      ["EXISTS", key.snapshot("arc")],
+      ["LLEN", key.wlList],
+      ["GET", key.visitsTotal],
+    ]);
+    const snapshots = (counts?.[0] ?? 0) + (counts?.[1] ?? 0) + (counts?.[2] ?? 0);
+    const whitelist = counts?.[3] ?? 0;
+    const visits = Number(counts?.[4] ?? 0) || 0;
+
+    return {
+      configured: true,
+      reachable: true,
+      via,
+      ms,
+      snapshots,
+      whitelist,
+      visits,
+      detail: `Connected in ${ms}ms via ${via}. ${snapshots} chain snapshot${snapshots === 1 ? "" : "s"} cached, ${whitelist} whitelist claim${whitelist === 1 ? "" : "s"}, ${visits} visit${visits === 1 ? "" : "s"} counted.`,
+    };
+  },
+);
 
 // ── Token snapshot ───────────────────────────────────────────────────────────
 

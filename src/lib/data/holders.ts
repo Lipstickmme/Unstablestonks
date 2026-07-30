@@ -22,6 +22,7 @@
 import { parseAbiItem, type Address, type Log } from "viem";
 import type { ChainConfig, ChainKey } from "@/config/chains";
 import { getErc20Balance, getPublicClient } from "./rpc";
+import { fetchTokenHolders } from "./blockscout";
 import { scanTransferLogs } from "../launch-scan";
 
 const TRANSFER = parseAbiItem(
@@ -119,9 +120,56 @@ async function candidateAddresses(
 }
 
 /**
+ * The largest holders this token has, from whichever route can answer.
+ *
+ * THIS is the function to call — it is the one place in the app that answers
+ * "who holds this token". Three separate callers used to each ask their own way:
+ * the token page's activity panel, the distribution columns in the list, and the
+ * whale count. Same token, same answer, three round trips, and they could
+ * disagree with each other on screen. Now they share one cached result.
+ *
+ * Explorer first (one request, richest), the chain second (see deriveTopHolders).
+ */
+export async function getTokenHolders(
+  key: ChainKey,
+  cfg: ChainConfig,
+  token: string,
+  decimals: number,
+  totalSupply: number,
+  limit = 50,
+): Promise<DerivedHolder[]> {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(token) || totalSupply <= 0) return [];
+
+  const cacheKey = `all:${key}:${token.toLowerCase()}`;
+  const hit = cache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < TTL_MS) return hit.holders.slice(0, limit);
+  const running = inFlight.get(cacheKey);
+  if (running) return (await running).slice(0, limit);
+
+  const job = (async () => {
+    const explorer = await fetchTokenHolders(cfg, token, decimals, totalSupply, MAX_CANDIDATES)
+      .catch(() => [])
+      .then((rows) => rows.filter((h) => h.amount > 0));
+    if (explorer.length) return explorer.sort((a, b) => b.amount - a.amount);
+    return deriveTopHolders(key, cfg, token, decimals, totalSupply, MAX_CANDIDATES);
+  })();
+
+  inFlight.set(cacheKey, job);
+  try {
+    const holders = await job;
+    if (holders.length) cache.set(cacheKey, { ts: Date.now(), holders });
+    return holders.slice(0, limit);
+  } finally {
+    inFlight.delete(cacheKey);
+  }
+}
+
+/**
  * The largest holders this token has, derived from the chain. Sorted by balance,
  * descending. Empty when logs are unavailable from every route — in which case
  * the caller shows no data rather than a number it can't stand behind.
+ *
+ * Prefer `getTokenHolders` — this is only the on-chain half of it.
  */
 export async function deriveTopHolders(
   key: ChainKey,
@@ -133,7 +181,7 @@ export async function deriveTopHolders(
 ): Promise<DerivedHolder[]> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(token) || totalSupply <= 0) return [];
 
-  const cacheKey = `${key}:${token.toLowerCase()}`;
+  const cacheKey = `chain:${key}:${token.toLowerCase()}`;
   const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.ts < TTL_MS) return hit.holders.slice(0, limit);
   const running = inFlight.get(cacheKey);

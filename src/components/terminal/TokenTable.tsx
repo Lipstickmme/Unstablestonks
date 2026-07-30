@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { storeStatus } from "@/lib/store";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TokenStatus, TradeEvent } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
@@ -33,6 +35,7 @@ import {
   BadgeCheck,
   Send,
   Wallet,
+  Database,
 } from "lucide-react";
 
 type SortKey =
@@ -176,6 +179,39 @@ function SourceReadout() {
       title={entries.map(([k, n]) => `${k}: ${n}`).join(" · ") + (c.note ? ` — ${c.note}` : "")}
     >
       {entries.length - dead.length}/{entries.length} sources
+    </span>
+  );
+}
+
+/**
+ * Whether the shared store is actually answering.
+ *
+ * Credentials being set proves nothing — a wrong token or a deleted database
+ * fails exactly like no store at all, because every call degrades silently on
+ * purpose. This pings it for real. It stays quiet when connected and healthy;
+ * hover for the counts it holds.
+ */
+function StoreReadout() {
+  const q = useQuery({
+    queryKey: ["store-status"],
+    staleTime: 5 * 60_000,
+    refetchInterval: false,
+    retry: 0,
+    queryFn: () => storeStatus(),
+  });
+  const s = q.data;
+  if (!s) return null;
+
+  const tone = s.reachable
+    ? "text-bull border-bull/30"
+    : s.configured
+      ? "text-bear border-bear/30"
+      : "text-muted-foreground";
+
+  return (
+    <span className={`chip !py-0 text-[9px] ${tone}`} title={s.detail}>
+      <Database className="h-2.5 w-2.5" />
+      {s.reachable ? "store live" : s.configured ? "store error" : "no store"}
     </span>
   );
 }
@@ -461,6 +497,7 @@ export function TokenTable({
             <span className="live-dot" /> live
           </span>
           {!isPortfolio && <SourceReadout />}
+          <StoreReadout />
         </div>
       </div>
 
