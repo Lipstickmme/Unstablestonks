@@ -340,6 +340,7 @@ export function TokenTable({
   bundles,
   insights,
   trades,
+  forceTab,
 }: {
   tokens: TokenRow[];
   loading?: boolean;
@@ -352,12 +353,14 @@ export function TokenTable({
   insights?: Record<string, TokenInsight>;
   /** Chain-wide swaps — the portfolio tab reads this wallet's own out of it. */
   trades?: TradeEvent[];
+  /** Tab selected from outside — the mobile tab bar drives this via the URL. */
+  forceTab?: Filter;
 }) {
   const { chain } = useChain();
   const watchlist = useWatchlist();
   const [sort, setSort] = useState<SortKey>("vol24h");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>(forceTab ?? "all");
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
   const isPortfolio = filter === "portfolio";
@@ -366,6 +369,12 @@ export function TokenTable({
   useEffect(() => {
     if (initialQuery !== undefined) setQuery(initialQuery);
   }, [initialQuery]);
+
+  // Follow the tab bar. Only when it names one — leaving it undefined means
+  // "the table owns its own tab", which is what the desktop chips need.
+  useEffect(() => {
+    if (forceTab) setFilter(forceTab);
+  }, [forceTab]);
 
   // A search from the header is about launches — don't leave it filtering a tab
   // that has no list to filter.
@@ -592,10 +601,13 @@ export function TokenTable({
                   </td>
                 </tr>
               )}
-              {rows.map((t) => (
+              {rows.map((t, i) => (
                 <tr
                   key={t.address}
-                  className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
+                  // Staggered arrival, capped in CSS so the tail of a long list
+                  // doesn't sit visibly waiting its turn.
+                  style={{ "--i": i } as React.CSSProperties}
+                  className="row-in group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
                 >
                   {/* Frozen while the rest of the row scrolls sideways — without
                     an anchor column the numbers stop meaning anything on a
@@ -738,7 +750,7 @@ export function TokenTable({
                           // swallowed as a duplicate.
                           setBuyToken(t);
                         }}
-                        className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                        className="tap inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
                       >
                         <Zap className="h-3 w-3" /> Buy
                       </button>

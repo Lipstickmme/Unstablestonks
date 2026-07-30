@@ -22,13 +22,15 @@ import { AlertTriangle } from "lucide-react";
 
 interface HomeSearch {
   q?: string;
-  view?: "all" | "watch";
+  /** Which face of the terminal is showing. Lives in the URL so the mobile tab
+   *  bar survives a reload and a tab can be linked to. */
+  view?: "all" | "watch" | "portfolio";
 }
 
 export const Route = createFileRoute("/")({
   validateSearch: (search: Record<string, unknown>): HomeSearch => ({
     q: typeof search.q === "string" ? search.q : undefined,
-    view: search.view === "watch" ? "watch" : "all",
+    view: search.view === "watch" ? "watch" : search.view === "portfolio" ? "portfolio" : "all",
   }),
   head: () => ({
     meta: [
@@ -112,7 +114,7 @@ function Terminal() {
   const bundlesByToken = useMemo(() => analyzeBundlesByToken(chainTrades), [chainTrades]);
 
   return (
-    <div className="min-h-screen">
+    <div className="app-shell min-h-screen">
       <Header />
 
       <div className="mx-auto max-w-[1600px] space-y-4 px-3 py-4 sm:px-5 sm:py-5">
@@ -146,6 +148,10 @@ function Terminal() {
             error={tokensQ.isError}
             initialQuery={q}
             watchOnly={view === "watch"}
+            // Always named, so leaving the portfolio tab actually leaves it:
+            // with undefined the table kept whatever tab it was last on, and
+            // tapping Watchlist from Portfolio showed the portfolio again.
+            forceTab={view === "portfolio" ? "portfolio" : "all"}
             bundles={bundlesByToken}
             insights={insightsQ.data}
             trades={chainTrades}

@@ -15,6 +15,8 @@ import {
 import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
 import { markTradeComplete } from "@/lib/whitelist";
 import { trackEvent } from "@/lib/store";
+import { recordBuy, recordSell, type SellOutcome } from "@/lib/positions";
+import { PnlCard } from "./PnlCard";
 
 /**
  * Amount for a 25% / 50% / MAX button.
@@ -56,6 +58,7 @@ export function SwapPanel({
   const [status, setStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sellOutcome, setSellOutcome] = useState<SellOutcome | null>(null);
 
   const tokenAddr = token.address as `0x${string}`;
   const tokenDecimals = token.decimals ?? 18;
@@ -167,6 +170,22 @@ export function SwapPanel({
         // A counter, nothing more — no address, no amount. Silent when no
         // shared store is configured.
         void trackEvent({ data: { name: `swap-${chainKey}` } }).catch(() => {});
+
+        // Keep the cost basis. Both legs are valued at the token's USD price at
+        // the time, so a later sell reports the price move and nothing else.
+        if (token.price > 0) {
+          if (side === "buy") {
+            const received = quote.amountOut;
+            if (received > 0) {
+              recordBuy(chainKey, token.address, token.symbol, received, token.price);
+            }
+          } else {
+            // Null when this browser never recorded the entry — then there is no
+            // basis, and a P&L card would be fiction. Nothing is shown.
+            const result = recordSell(chainKey, token.address, token.symbol, amtNum, token.price);
+            if (result) setSellOutcome(result);
+          }
+        }
       }
     } catch (e) {
       setStatus(e instanceof Error ? e.message.split("\n")[0] : "Swap failed.");
@@ -326,7 +345,7 @@ export function SwapPanel({
       <button
         onClick={onAction}
         disabled={busy || (Boolean(wallet.address) && !wrongChain && !enabled)}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+        className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
         {actionLabel}
@@ -349,6 +368,10 @@ export function SwapPanel({
             </a>
           )}
         </p>
+      )}
+
+      {sellOutcome && (
+        <PnlCard outcome={sellOutcome} txHash={txHash} onClose={() => setSellOutcome(null)} />
       )}
     </section>
   );

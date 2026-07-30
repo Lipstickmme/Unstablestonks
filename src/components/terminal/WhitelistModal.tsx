@@ -101,7 +101,7 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="fade-up my-auto w-full max-w-md overflow-hidden rounded-t-2xl border border-border bg-background sm:rounded-2xl"
+        className="sheet-grip sheet-up my-auto w-full max-w-md overflow-hidden rounded-t-3xl border border-border bg-background sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -210,7 +210,7 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
               <button
                 onClick={onClaim}
                 disabled={!done || claiming}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+                className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 {claiming && <Loader2 className="h-4 w-4 animate-spin" />}
                 {!wallet.address

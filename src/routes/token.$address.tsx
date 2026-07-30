@@ -73,7 +73,7 @@ function TokenDetail() {
   const closes = candles.map((c) => c.c);
 
   return (
-    <div className="min-h-screen">
+    <div className="app-shell min-h-screen">
       <Header />
 
       <div className="mx-auto max-w-[1600px] space-y-4 px-3 py-4 sm:px-5 sm:py-5">

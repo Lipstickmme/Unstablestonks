@@ -96,7 +96,9 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
               <div className="num mt-2 text-2xl font-light tracking-tight sm:text-3xl md:text-4xl">
                 {t.value == null ? (
                   loading && !stats ? (
-                    <span className="text-muted-foreground/40">···</span>
+                    // A shimmering bar the width the figure will occupy, so the
+                    // tile doesn't jump when the number lands.
+                    <span className="shimmer block h-7 w-20 rounded-md sm:h-8 md:h-9" />
                   ) : (
                     "—"
                   )

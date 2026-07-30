@@ -31,7 +31,7 @@ export function BridgeModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="fade-up w-full max-w-sm overflow-hidden rounded-t-2xl border border-border bg-background sm:rounded-2xl"
+        className="sheet-grip sheet-up w-full max-w-sm overflow-hidden rounded-t-3xl border border-border bg-background sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-3">

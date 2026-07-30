@@ -236,11 +236,151 @@
   animation: spark-draw 0.8s ease-out both;
 }
 
+/* ── Mini-app shell ──────────────────────────────────────────────────────────
+   On a phone this should read as an app, not a page: content sits above a fixed
+   tab bar, panels arrive as sheets from the bottom edge, and everything tappable
+   answers the touch. The desktop layout is untouched — these are all either
+   mobile-only or too subtle to notice with a mouse. */
+
+/* Room for the fixed tab bar plus the home indicator on notched devices. */
+.app-shell {
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 640px) {
+  .app-shell {
+    padding-bottom: 0;
+  }
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Press feedback. Telegram's own controls dip under the finger, and without it
+   a tap on a dark UI gives no sign it landed until the next paint. */
+.tap {
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.tap:active {
+  transform: scale(0.96);
+  opacity: 0.9;
+}
+
+/* Sheets rise from the bottom edge on a phone, fade in on a desktop. */
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(14%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.sheet-up {
+  animation: sheet-up 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The grab handle at the top of a sheet — pure affordance, says "drag me down"
+   even though the backdrop tap is what actually closes it. */
+.sheet-grip::before {
+  content: "";
+  display: block;
+  width: 2.25rem;
+  height: 0.25rem;
+  margin: 0.5rem auto 0;
+  border-radius: 9999px;
+  background: var(--border);
+}
+@media (min-width: 640px) {
+  .sheet-grip::before {
+    display: none;
+  }
+}
+
+/* Tab bar selection: the pill slides in behind the active item. */
+@keyframes tab-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.tab-pop {
+  animation: tab-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Rows arriving in a list, staggered by index via --i. Capped so a long list
+   doesn't leave the last rows waiting a visible beat. */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.row-in {
+  animation: row-in 0.32s ease-out both;
+  animation-delay: calc(min(var(--i, 0) * 18ms, 320ms));
+}
+
+/* Skeleton shimmer while a figure is still resolving. */
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--surface) 25%,
+    var(--surface-elevated) 50%,
+    var(--surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* The P&L card's colour wash — green rises, red falls. */
+.pnl-glow-up {
+  background: radial-gradient(
+    120% 80% at 50% 0%,
+    color-mix(in oklab, var(--bull) 22%, transparent) 0%,
+    transparent 70%
+  );
+}
+.pnl-glow-down {
+  background: radial-gradient(
+    120% 80% at 50% 0%,
+    color-mix(in oklab, var(--bear) 22%, transparent) 0%,
+    transparent 70%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fade-up,
   .intel-glow,
   .spark-draw,
-  .live-dot {
+  .live-dot,
+  .sheet-up,
+  .tab-pop,
+  .row-in,
+  .shimmer {
     animation: none;
+  }
+  .tap:active {
+    transform: none;
   }
 }

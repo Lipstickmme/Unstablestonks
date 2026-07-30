@@ -145,7 +145,7 @@ export function PortfolioPanel({
         </p>
         <button
           onClick={() => wallet.requestPicker()}
-          className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+          className="tap rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
         >
           Connect wallet
         </button>
@@ -357,7 +357,7 @@ export function PortfolioPanel({
                   <td className="px-3 py-2 text-right">
                     <button
                       onClick={() => setBuyToken(pos.token)}
-                      className="rounded-lg bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                      className="tap rounded-lg bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
                     >
                       Trade
                     </button>
