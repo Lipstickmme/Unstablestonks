@@ -1,7 +1,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useChain } from "@/lib/chain-context";
-import type { ChainConfig, ChainKey } from "@/config/chains";
+import { getIntermediary, type ChainConfig, type ChainKey } from "@/config/chains";
 import type { ChainStats, TokenRow, TradeEvent } from "../types";
 import {
   fetchAddressCreator,
@@ -10,6 +10,8 @@ import {
   fetchTokenHolders,
   fetchTokens,
   fetchTokenTransfers,
+  fetchWalletTransfers,
+  type WalletTransfer,
 } from "./blockscout";
 import {
   fetchDexPaid,
@@ -28,11 +30,11 @@ import {
   fetchTokenPools,
   type Candle,
 } from "./geckoterminal";
-import { getErc20Balance, getErc20Meta, getRpcHealth } from "./rpc";
+import { getErc20Balance, getErc20Meta, getNativeBalance, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
 import { fetchExplorerStats } from "../explorer-stats";
 import { readCache, writeCache } from "../persist";
-import { readSnapshot, writeSnapshot } from "../store";
+import { readLogos, readSnapshot, writeLogos, writeSnapshot } from "../store";
 
 // 30s keeps us comfortably under GeckoTerminal's free-tier rate limit
 // (30 calls/min) with the pools + new_pools + stats calls per cycle.
@@ -233,6 +235,26 @@ export function useTokens() {
     },
   });
 
+  // Every token logo the terminal has ever resolved on this chain, address →
+  // URL. Unlike the snapshot this survives for weeks, so artwork is attached to
+  // a row on the very first paint instead of arriving with the enrichment pass —
+  // the actual reason new Stable launches showed as blank tiles.
+  const logosQ = useQuery<Record<string, string>>({
+    queryKey: ["token-logos", chainKey],
+    staleTime: 30 * 60_000,
+    refetchInterval: false,
+    retry: 0,
+    queryFn: async () => {
+      const res = await readLogos({ data: { chain: chainKey } }).catch(() => null);
+      if (!res?.json) return {};
+      try {
+        return JSON.parse(res.json) as Record<string, string>;
+      } catch {
+        return {};
+      }
+    },
+  });
+
   // ── Slow lane: what exists on the chain ────────────────────────────────────
   // Which tokens exist, their names, decimals and icons — plus discovery of new
   // launches. None of it changes on a 30s scale, and together it was six extra
@@ -300,6 +322,19 @@ export function useTokens() {
       }
     }
 
+    // Attach known artwork to anything that arrived without it, and note what
+    // this pass learned so the next cold visitor starts with it too.
+    const knownLogos = logosQ.data ?? {};
+    const freshLogos: Record<string, string> = {};
+    for (const row of merged.values()) {
+      const addr = row.address.toLowerCase();
+      if (row.logoUrl) {
+        if (knownLogos[addr] !== row.logoUrl) freshLogos[addr] = row.logoUrl;
+      } else if (knownLogos[addr]) {
+        row.logoUrl = knownLogos[addr];
+      }
+    }
+
     // Volume ranks the list, but a brand-new launch has none yet — so tokens
     // discovered in the last 24h sort by age at the top of the untraded tail.
     const rows = [...merged.values()].sort((a, b) => {
@@ -317,6 +352,13 @@ export function useTokens() {
       if (market.length) {
         void writeSnapshot({
           data: { chain: chainKey, json: JSON.stringify(rows.slice(0, 120)) },
+        }).catch(() => {});
+      }
+      // Only when something is actually new — re-publishing the same map every
+      // merge would spend the store's command budget on nothing.
+      if (Object.keys(freshLogos).length) {
+        void writeLogos({
+          data: { chain: chainKey, json: JSON.stringify(freshLogos) },
         }).catch(() => {});
       }
       return {
@@ -340,6 +382,7 @@ export function useTokens() {
     directoryQ.isLoading,
     directoryQ.isError,
     snapshotQ.data,
+    logosQ.data,
     cacheKey,
     chainKey,
   ]);
@@ -692,6 +735,181 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
       );
       return perToken.flat().sort((a, b) => b.ms - a.ms);
     },
+  });
+}
+
+/**
+ * Tokens balance-checked for the connected wallet. viem batches these into
+ * multicalls, so the cost is a few round trips rather than one call per token —
+ * but the list can run to hundreds on a busy chain, so it is still bounded.
+ */
+const MAX_PORTFOLIO_TOKENS = 80;
+
+export interface PortfolioPosition {
+  token: TokenRow;
+  balance: number;
+  valueUsd: number;
+  /** Share of the wallet's total value on this chain. */
+  weightPct: number;
+  /** Share of the token's supply this wallet holds, when supply is known. */
+  supplyPct?: number;
+}
+
+export interface Portfolio {
+  positions: PortfolioPosition[];
+  /** Gas-asset balance. USD only when the native asset can be priced. */
+  native: { symbol: string; balance: number; valueUsd?: number };
+  /** Positions + native, where priced. */
+  totalUsd: number;
+  /** Value-weighted 24h move over the positions whose change is known. */
+  change24hPct?: number;
+  change24hUsd: number;
+  best?: PortfolioPosition;
+  worst?: PortfolioPosition;
+  /** How many tokens were actually checked — the rest were past the cap. */
+  scanned: number;
+}
+
+/**
+ * What the connected wallet holds on the active chain.
+ *
+ * Balances come off the chain (balanceOf per token, batched) and are priced with
+ * the list's own live prices, so a position is only valued when the terminal can
+ * actually price the token. Nothing here is inferred from the trade feed — that
+ * feed is a finite window and would understate anyone who bought before it.
+ *
+ * This is the heaviest read in the app — up to MAX_PORTFOLIO_TOKENS balanceOf
+ * calls — so its caller only mounts on the portfolio tab. `enabled` is there for
+ * anywhere that needs to hold it back without unmounting.
+ */
+export function useWalletPortfolio(
+  wallet: string | null | undefined,
+  tokens: TokenRow[] | undefined,
+  enabled = true,
+) {
+  const { chain, chainKey } = useChain();
+
+  /**
+   * On Stable and Arc the gas asset and a listed ERC-20 are the SAME funds seen
+   * two ways — native USDT0/USDC at 18 decimals, and the predeploy at 6. Counting
+   * both would double every balance, so the ERC-20 view is dropped and the native
+   * reading stands for it.
+   */
+  const gasTwin =
+    chain.stablecoin && chain.stablecoin.symbol === chain.nativeCurrency.symbol
+      ? chain.stablecoin.address?.toLowerCase()
+      : undefined;
+
+  // Deepest markets first: if the cap bites, it should bite on the tokens least
+  // likely to be held.
+  const targets = useMemo(
+    () =>
+      [...(tokens ?? [])]
+        .filter((t) => t.address.toLowerCase() !== gasTwin)
+        .sort((a, b) => b.vol24h - a.vol24h || b.mcap - a.mcap)
+        .slice(0, MAX_PORTFOLIO_TOKENS),
+    [tokens, gasTwin],
+  );
+
+  const key = targets.map((t) => t.address).join(",");
+
+  return useQuery<Portfolio>({
+    queryKey: ["portfolio", chainKey, wallet ?? "", key],
+    enabled: enabled && Boolean(wallet) && targets.length > 0,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: 0,
+    queryFn: async () => {
+      const owner = wallet as `0x${string}`;
+
+      const [nativeBalance, balances] = await Promise.all([
+        getNativeBalance(chainKey, owner).catch(() => 0),
+        Promise.all(
+          targets.map((t) =>
+            getErc20Balance(chainKey, t.address as `0x${string}`, owner, t.decimals ?? 18).catch(
+              () => 0,
+            ),
+          ),
+        ),
+      ]);
+
+      const positions: PortfolioPosition[] = [];
+      for (let i = 0; i < targets.length; i++) {
+        const balance = balances[i];
+        if (balance <= 0) continue;
+        const token = targets[i];
+        positions.push({
+          token,
+          balance,
+          valueUsd: token.price > 0 ? balance * token.price : 0,
+          weightPct: 0,
+          supplyPct:
+            token.totalSupply && token.totalSupply > 0
+              ? (balance / token.totalSupply) * 100
+              : undefined,
+        });
+      }
+
+      // The gas asset is a stablecoin on Stable (USDT0) and Arc (USDC), so it
+      // prices at $1. Elsewhere it is priced only if its wrapped form trades on
+      // the chain — never guessed from an off-chain quote.
+      const wrapped = getIntermediary(chain)?.address?.toLowerCase();
+      const wrappedRow = wrapped
+        ? targets.find((t) => t.address.toLowerCase() === wrapped && t.price > 0)
+        : undefined;
+      const nativePrice =
+        chain.stablecoin?.symbol === chain.nativeCurrency.symbol ? 1 : wrappedRow?.price;
+
+      const nativeUsd = nativePrice != null ? nativeBalance * nativePrice : undefined;
+      const totalUsd = positions.reduce((s, p) => s + p.valueUsd, 0) + (nativeUsd ?? 0);
+
+      for (const p of positions) {
+        p.weightPct = totalUsd > 0 ? (p.valueUsd / totalUsd) * 100 : 0;
+      }
+      positions.sort((a, b) => b.valueUsd - a.valueUsd || b.balance - a.balance);
+
+      // Weighted 24h move across priced positions only. The gas asset is left
+      // out: on two of three chains it is a dollar and never moves.
+      const priced = positions.filter((p) => p.valueUsd > 0 && p.token.priceChange24h !== 0);
+      const pricedValue = priced.reduce((s, p) => s + p.valueUsd, 0);
+      const change24hUsd = priced.reduce(
+        (s, p) => s + p.valueUsd * (p.token.priceChange24h / 100),
+        0,
+      );
+      const ranked = [...priced].sort((a, b) => b.token.priceChange24h - a.token.priceChange24h);
+
+      return {
+        positions,
+        native: {
+          symbol: chain.nativeCurrency.symbol,
+          balance: nativeBalance,
+          valueUsd: nativeUsd,
+        },
+        totalUsd,
+        change24hPct: pricedValue > 0 ? (change24hUsd / pricedValue) * 100 : undefined,
+        change24hUsd,
+        best: ranked[0],
+        worst: ranked.length > 1 ? ranked[ranked.length - 1] : undefined,
+        scanned: targets.length,
+      };
+    },
+  });
+}
+
+/**
+ * The connected wallet's own token movements on this chain, straight off the
+ * explorer. Independent of the pool trade feed, which only watches the busiest
+ * eight pools and would leave most wallets looking inactive.
+ */
+export function useWalletActivity(wallet: string | null | undefined, enabled = true) {
+  const { chain, chainKey } = useChain();
+  return useQuery<WalletTransfer[]>({
+    queryKey: ["wallet-activity", chainKey, wallet ?? ""],
+    enabled: enabled && Boolean(wallet),
+    staleTime: 45_000,
+    refetchInterval: 60_000,
+    retry: 0,
+    queryFn: () => fetchWalletTransfers(chain, wallet as string),
   });
 }
 

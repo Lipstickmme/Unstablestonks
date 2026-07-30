@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { kvEnabled, kvGetJson, kvIncr, kvPipeline, kvSetJson } from "./kv";
+import { kvCommand, kvEnabled, kvGetJson, kvIncr, kvPipeline, kvSetJson } from "./kv";
 import { WHITELIST_CAP } from "./whitelist";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@ const SNAPSHOT_TTL = 15 * 60; // seconds
 
 const key = {
   snapshot: (chain: string) => `snap:tokens:${chain}`,
+  logos: (chain: string) => `logo:${chain}`,
   wlList: "wl:roster",
   wlWallet: (addr: string) => `wl:spot:${addr}`,
   visits: (day: string) => `stat:visits:${day}`,
@@ -60,6 +61,72 @@ export const writeSnapshot = createServerFn({ method: "POST" })
     if (!kvEnabled() || data.json.length < 2) return { ok: false };
     await kvSetJson(key.snapshot(data.chain), { json: data.json, ts: Date.now() }, SNAPSHOT_TTL);
     return { ok: true };
+  });
+
+// ── Token logos ──────────────────────────────────────────────────────────────
+//
+// The snapshot expires in 15 minutes; artwork doesn't change on that scale. A
+// token's icon URL, once found, is good for weeks — so it gets its own long-
+// lived hash. This is what stops a brand-new Stable launch from rendering as a
+// blank tile on every cold load while the enrichment pass catches up: the URL
+// is already known before any indexer answers, so the browser starts fetching
+// the image with the first paint.
+//
+// URLs only, never image bytes. The browser caches the bytes itself after the
+// first fetch; mirroring them here would spend the free tier's transfer budget
+// to re-solve a problem HTTP already solved.
+
+const LOGO_TTL = 30 * 24 * 3600; // seconds — dead tokens age out on their own
+const MAX_LOGO_WRITE = 120;
+
+export const readLogos = createServerFn({ method: "GET" })
+  .validator((raw: unknown): { chain: string } => ({
+    chain: String((raw as { chain?: unknown })?.chain ?? "").trim() || "stable",
+  }))
+  .handler(async ({ data }): Promise<{ json: string }> => {
+    if (!kvEnabled()) return { json: "" };
+    // HGETALL answers as a flat [field, value, field, value, …] array.
+    const flat = await kvCommand<string[]>(["HGETALL", key.logos(data.chain)]);
+    if (!Array.isArray(flat) || flat.length < 2) return { json: "" };
+    const out: Record<string, string> = {};
+    for (let i = 0; i + 1 < flat.length; i += 2) out[flat[i]] = flat[i + 1];
+    return { json: JSON.stringify(out) };
+  });
+
+export const writeLogos = createServerFn({ method: "POST" })
+  .validator((raw: unknown): { chain: string; json: string } => {
+    const o = (raw ?? {}) as { chain?: unknown; json?: unknown };
+    return {
+      chain: String(o.chain ?? "").trim() || "stable",
+      json: String(o.json ?? "").slice(0, 100_000),
+    };
+  })
+  .handler(async ({ data }): Promise<{ ok: boolean; written: number }> => {
+    if (!kvEnabled() || data.json.length < 2) return { ok: false, written: 0 };
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data.json);
+    } catch {
+      return { ok: false, written: 0 };
+    }
+    if (!parsed || typeof parsed !== "object") return { ok: false, written: 0 };
+
+    const args: string[] = [];
+    for (const [addr, url] of Object.entries(parsed as Record<string, unknown>)) {
+      if (args.length >= MAX_LOGO_WRITE * 2) break;
+      if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) continue;
+      if (typeof url !== "string" || !/^https?:\/\//.test(url) || url.length > 400) continue;
+      args.push(addr.toLowerCase(), url);
+    }
+    if (!args.length) return { ok: false, written: 0 };
+
+    const k = key.logos(data.chain);
+    await kvPipeline([
+      ["HSET", k, ...args],
+      ["EXPIRE", k, LOGO_TTL],
+    ]);
+    return { ok: true, written: args.length / 2 };
   });
 
 // ── Whitelist ────────────────────────────────────────────────────────────────

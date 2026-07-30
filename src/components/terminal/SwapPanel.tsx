@@ -14,6 +14,7 @@ import {
 } from "@/lib/swap";
 import { getNativeBalance, getErc20Balance } from "@/lib/data/rpc";
 import { markTradeComplete } from "@/lib/whitelist";
+import { trackEvent } from "@/lib/store";
 
 /**
  * Amount for a 25% / 50% / MAX button.
@@ -161,7 +162,12 @@ export function SwapPanel({
       setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
       setStatus("Submitted. Track it on the explorer.");
       // The one whitelist task we can actually observe.
-      if (res.swapTxHash) markTradeComplete();
+      if (res.swapTxHash) {
+        markTradeComplete();
+        // A counter, nothing more — no address, no amount. Silent when no
+        // shared store is configured.
+        void trackEvent({ data: { name: `swap-${chainKey}` } }).catch(() => {});
+      }
     } catch (e) {
       setStatus(e instanceof Error ? e.message.split("\n")[0] : "Swap failed.");
     } finally {

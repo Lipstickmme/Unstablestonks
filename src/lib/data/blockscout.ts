@@ -185,6 +185,61 @@ export async function fetchTokenTransfers(
   });
 }
 
+/** One token movement in or out of a wallet, as the explorer recorded it. */
+export interface WalletTransfer {
+  txHash?: string;
+  ms: number;
+  /** From the wallet's point of view. */
+  direction: "in" | "out";
+  tokenAddress: string;
+  symbol: string;
+  amount: number;
+  /** The other party — a pool address on a swap, a wallet on a plain send. */
+  counterparty: string;
+}
+
+/**
+ * A wallet's own token movements, newest first.
+ *
+ * This is the honest activity feed for a portfolio: the chain-wide trade feed
+ * only covers the busiest pools, so it silently omits everything a wallet did
+ * elsewhere. Direction is a fact of the transfer — no buy/sell is inferred,
+ * because a transfer alone can't tell a swap from a send.
+ */
+export async function fetchWalletTransfers(
+  cfg: ChainConfig,
+  wallet: string,
+  limit = 40,
+): Promise<WalletTransfer[]> {
+  const base = cfg.explorer.apiBase;
+  if (!base || !wallet) return [];
+  const data = await safeJson<{ items?: (BsTransfer & { token?: BsToken })[] }>(
+    `${base}/addresses/${wallet}/token-transfers?type=ERC-20`,
+  );
+  if (!data?.items?.length) return [];
+  const me = wallet.toLowerCase();
+
+  return data.items
+    .slice(0, limit)
+    .map((tr, i) => {
+      const dec = num(tr.total?.decimals) || num(tr.token?.decimals) || 18;
+      const from = (tr.from?.hash ?? "").toLowerCase();
+      const to = (tr.to?.hash ?? "").toLowerCase();
+      const direction: "in" | "out" = to === me ? "in" : "out";
+      return {
+        txHash: tr.tx_hash ?? tr.transaction_hash,
+        ms: tr.timestamp ? new Date(tr.timestamp).getTime() : Date.now() - i * 1000,
+        direction,
+        tokenAddress: tokenAddress(tr.token ?? {}),
+        symbol: tr.token?.symbol || "?",
+        amount: num(tr.total?.value) / Math.pow(10, dec),
+        counterparty: direction === "in" ? from : to,
+      };
+    })
+    .filter((t) => t.tokenAddress)
+    .sort((a, b) => b.ms - a.ms);
+}
+
 export async function fetchChainStats(cfg: ChainConfig): Promise<Partial<ChainStats>> {
   const base = cfg.explorer.apiBase;
   if (!base) return {};

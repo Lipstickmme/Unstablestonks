@@ -148,6 +148,7 @@ function Terminal() {
             watchOnly={view === "watch"}
             bundles={bundlesByToken}
             insights={insightsQ.data}
+            trades={chainTrades}
           />
         </div>
 

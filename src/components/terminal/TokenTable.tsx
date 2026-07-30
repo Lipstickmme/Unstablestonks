@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { formatAge, formatNum, formatUSD, shortAddr } from "@/lib/format";
-import type { TokenRow, TokenStatus } from "@/lib/types";
+import type { TokenRow, TokenStatus, TradeEvent } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
 import { useSourceCounts, WHALE_HOLDER_USD, type TokenInsight } from "@/lib/data/hooks";
 import { baseBotUrl } from "@/config/links";
@@ -11,6 +11,7 @@ import { WhaleIcon } from "@/components/brand/WhaleIcon";
 import { useChain } from "@/lib/chain-context";
 import { useWatchlist } from "@/lib/watchlist";
 import { QuickBuyModal } from "./QuickBuyModal";
+import { PortfolioPanel } from "./PortfolioPanel";
 import { TokenIcon } from "./TokenIcon";
 import {
   Activity,
@@ -31,6 +32,7 @@ import {
   Star,
   BadgeCheck,
   Send,
+  Wallet,
 } from "lucide-react";
 
 type SortKey =
@@ -43,12 +45,16 @@ type SortKey =
   | "socialHeat"
   | "priceChange24h"
   | "holders";
-type Filter = "all" | "new" | "trending";
+type Filter = "all" | "new" | "trending" | "portfolio";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   { key: "all", label: "All launches" },
   { key: "new", label: "New", icon: <Sparkles className="h-3 w-3" /> },
   { key: "trending", label: "Trending", icon: <Flame className="h-3 w-3" /> },
+  // Portfolio isn't a filter over the launches — it swaps the body out for the
+  // connected wallet's own holdings. It lives here anyway because it answers
+  // the same question from the other side: what's moving, and what do I own.
+  { key: "portfolio", label: "Portfolio", icon: <Wallet className="h-3 w-3" /> },
 ];
 
 function StatusBadge({ s }: { s: TokenStatus }) {
@@ -297,6 +303,7 @@ export function TokenTable({
   watchOnly,
   bundles,
   insights,
+  trades,
 }: {
   tokens: TokenRow[];
   loading?: boolean;
@@ -307,6 +314,8 @@ export function TokenTable({
   bundles?: Record<string, BundleStats>;
   /** Distribution + listing intel, keyed by token address. */
   insights?: Record<string, TokenInsight>;
+  /** Chain-wide swaps — the portfolio tab reads this wallet's own out of it. */
+  trades?: TradeEvent[];
 }) {
   const { chain } = useChain();
   const watchlist = useWatchlist();
@@ -315,11 +324,21 @@ export function TokenTable({
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
+  const isPortfolio = filter === "portfolio";
 
   // Reflect a search submitted from the header.
   useEffect(() => {
     if (initialQuery !== undefined) setQuery(initialQuery);
   }, [initialQuery]);
+
+  // A search from the header is about launches — don't leave it filtering a tab
+  // that has no list to filter.
+  useEffect(() => {
+    if (query && isPortfolio) setFilter("all");
+    // Intentionally keyed on the query alone: switching to Portfolio while a
+    // filter is typed should not bounce straight back out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
 
   const rows = useMemo(() => {
     let r = tokens;
@@ -331,7 +350,7 @@ export function TokenTable({
       r = r.filter(
         (t) => t.status.includes("new") || (t.ageMinutes >= 0 && t.ageMinutes < 24 * 60),
       );
-    } else if (filter !== "all") {
+    } else if (filter === "trending") {
       r = r.filter((t) => t.status.includes(filter));
     }
     if (query) {
@@ -421,275 +440,289 @@ export function TokenTable({
             >
               {f.icon}
               {f.label}
-              {filter === f.key && (
+              {filter === f.key && f.key !== "portfolio" && (
                 <span className="num text-[10px] text-muted-foreground">{rows.length}</span>
               )}
             </button>
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter…"
-            className="w-44 rounded-full border border-border bg-background px-3 py-1.5 text-xs outline-none focus:border-ring"
-          />
+          {/* The text filter belongs to the launches list; the portfolio is
+              already scoped to one wallet and has nothing to narrow. */}
+          {!isPortfolio && (
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter…"
+              className="w-44 rounded-full border border-border bg-background px-3 py-1.5 text-xs outline-none focus:border-ring"
+            />
+          )}
           <span className="chip">
             <span className="live-dot" /> live
           </span>
-          <SourceReadout />
+          {!isPortfolio && <SourceReadout />}
         </div>
       </div>
 
-      <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
-        <table className="w-full min-w-[760px] text-sm">
-          <thead>
-            <tr className="border-b border-border bg-surface-elevated/40 text-left">
-              <th className="sticky left-0 z-20 w-[150px] bg-surface-elevated px-3 py-2 sm:w-[168px]">
-                <H k="age" label="Token" />
-              </th>
-              <th className="px-1.5 py-2">
-                <H k="age" label="Age" />
-              </th>
-              <th className="px-1.5 py-2 text-right">
-                <H k="priceChange24h" label="Price / 24h change" icon={<>PRICE</>} right />
-              </th>
-              <th className="px-1.5 py-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                <Ico label="Trend" icon={<Activity className="h-3.5 w-3.5" />} center />
-              </th>
-              <th className="px-1.5 py-2 text-right">
-                <div className="flex items-center justify-end gap-1">
-                  <H k="mcap" label="Market cap" icon={<>MC</>} />
-                  <span className="text-[10px] text-muted-foreground/40">/</span>
-                  <H k="vol24h" label="24h volume" icon={<>VOL</>} />
-                </div>
-              </th>
-              <th className="px-1.5 py-2 text-right">
-                <div className="flex items-center justify-end gap-1.5">
-                  <Ico
-                    label="Buys / sells, 24h"
-                    icon={<ArrowLeftRight className="h-3.5 w-3.5" />}
-                  />
-                  <span className="text-[10px] text-muted-foreground/40">/</span>
-                  <H k="holders" label="Holders" icon={<Users className="h-3.5 w-3.5" />} />
-                </div>
-              </th>
-              <th className="px-1.5 py-2 text-right">
-                <div className="flex items-center justify-end gap-1.5">
-                  <Ico
-                    label="Dev holding / top 10 holders, as a share of supply"
-                    icon={<UserCog className="h-3.5 w-3.5" />}
-                  />
-                  <span className="text-[10px] text-muted-foreground/40">/</span>
-                  <Ico label="Top 10 holders" icon={<PieChart className="h-3.5 w-3.5" />} />
-                </div>
-              </th>
-              <th className="px-1.5 py-2 text-center">
-                <div className="flex items-center justify-center gap-1.5">
-                  <Ico label="Same-block bundles" icon={<Boxes className="h-3.5 w-3.5" />} center />
-                  <span className="text-[10px] text-muted-foreground/40">/</span>
-                  <Ico
-                    label="DexScreener paid listing"
-                    icon={<BadgeCheck className="h-3.5 w-3.5" />}
-                    center
-                  />
-                </div>
-              </th>
-              <th className="px-1.5 py-2">
-                <div className="flex items-center gap-1.5">
-                  <Ico label="Trading venue" icon={<Store className="h-3.5 w-3.5" />} center />
-                  <span className="text-[10px] text-muted-foreground/40">/</span>
-                  <H
-                    k="socialHeat"
-                    label="X social heat"
-                    icon={<Flame className="h-3.5 w-3.5" />}
-                  />
-                </div>
-              </th>
-              <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wider text-muted-foreground">
-                Trade
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={10} className="px-4 py-16 text-center text-sm text-muted-foreground">
-                  {watchOnly
-                    ? "Your watchlist is empty. Tap the ☆ on any token to add it."
-                    : loading
-                      ? "Loading live tokens from DEX indexers + block explorer…"
-                      : error
-                        ? "Couldn't reach the data sources for this chain. Retrying automatically."
-                        : "No tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
-                </td>
+      {isPortfolio ? (
+        <PortfolioPanel tokens={tokens} trades={trades ?? []} loading={loading} />
+      ) : (
+        <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-elevated/40 text-left">
+                <th className="sticky left-0 z-20 w-[150px] bg-surface-elevated px-3 py-2 sm:w-[168px]">
+                  <H k="age" label="Token" />
+                </th>
+                <th className="px-1.5 py-2">
+                  <H k="age" label="Age" />
+                </th>
+                <th className="px-1.5 py-2 text-right">
+                  <H k="priceChange24h" label="Price / 24h change" icon={<>PRICE</>} right />
+                </th>
+                <th className="px-1.5 py-2 text-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <Ico label="Trend" icon={<Activity className="h-3.5 w-3.5" />} center />
+                </th>
+                <th className="px-1.5 py-2 text-right">
+                  <div className="flex items-center justify-end gap-1">
+                    <H k="mcap" label="Market cap" icon={<>MC</>} />
+                    <span className="text-[10px] text-muted-foreground/40">/</span>
+                    <H k="vol24h" label="24h volume" icon={<>VOL</>} />
+                  </div>
+                </th>
+                <th className="px-1.5 py-2 text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Ico
+                      label="Buys / sells, 24h"
+                      icon={<ArrowLeftRight className="h-3.5 w-3.5" />}
+                    />
+                    <span className="text-[10px] text-muted-foreground/40">/</span>
+                    <H k="holders" label="Holders" icon={<Users className="h-3.5 w-3.5" />} />
+                  </div>
+                </th>
+                <th className="px-1.5 py-2 text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Ico
+                      label="Dev holding / top 10 holders, as a share of supply"
+                      icon={<UserCog className="h-3.5 w-3.5" />}
+                    />
+                    <span className="text-[10px] text-muted-foreground/40">/</span>
+                    <Ico label="Top 10 holders" icon={<PieChart className="h-3.5 w-3.5" />} />
+                  </div>
+                </th>
+                <th className="px-1.5 py-2 text-center">
+                  <div className="flex items-center justify-center gap-1.5">
+                    <Ico
+                      label="Same-block bundles"
+                      icon={<Boxes className="h-3.5 w-3.5" />}
+                      center
+                    />
+                    <span className="text-[10px] text-muted-foreground/40">/</span>
+                    <Ico
+                      label="DexScreener paid listing"
+                      icon={<BadgeCheck className="h-3.5 w-3.5" />}
+                      center
+                    />
+                  </div>
+                </th>
+                <th className="px-1.5 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <Ico label="Trading venue" icon={<Store className="h-3.5 w-3.5" />} center />
+                    <span className="text-[10px] text-muted-foreground/40">/</span>
+                    <H
+                      k="socialHeat"
+                      label="X social heat"
+                      icon={<Flame className="h-3.5 w-3.5" />}
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Trade
+                </th>
               </tr>
-            )}
-            {rows.map((t) => (
-              <tr
-                key={t.address}
-                className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
-              >
-                {/* Frozen while the rest of the row scrolls sideways — without
+            </thead>
+            <tbody>
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                    {watchOnly
+                      ? "Your watchlist is empty. Tap the ☆ on any token to add it."
+                      : loading
+                        ? "Loading live tokens from DEX indexers + block explorer…"
+                        : error
+                          ? "Couldn't reach the data sources for this chain. Retrying automatically."
+                          : "No tokens indexed on this chain yet. Switch chains or check back — the feed is live."}
+                  </td>
+                </tr>
+              )}
+              {rows.map((t) => (
+                <tr
+                  key={t.address}
+                  className="group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
+                >
+                  {/* Frozen while the rest of the row scrolls sideways — without
                     an anchor column the numbers stop meaning anything on a
                     phone. `bg-background` (and the elevated variant on hover)
                     keeps the scrolled columns from showing through. */}
-                <td className="sticky left-0 z-10 w-[150px] bg-background px-3 py-2 group-hover:bg-surface-elevated sm:w-[168px]">
-                  <Link
-                    to="/token/$address"
-                    params={{ address: t.address }}
-                    className="flex items-center gap-2"
-                  >
-                    <TokenIcon url={t.logoUrl} symbol={t.symbol} size={26} />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate text-[13px] font-medium">{t.symbol}</span>
-                        {t.status.slice(0, 1).map((st) => (
-                          <StatusBadge key={st} s={st} />
-                        ))}
+                  <td className="sticky left-0 z-10 w-[150px] bg-background px-3 py-2 group-hover:bg-surface-elevated sm:w-[168px]">
+                    <Link
+                      to="/token/$address"
+                      params={{ address: t.address }}
+                      className="flex items-center gap-2"
+                    >
+                      <TokenIcon url={t.logoUrl} symbol={t.symbol} size={26} />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px] font-medium">{t.symbol}</span>
+                          {t.status.slice(0, 1).map((st) => (
+                            <StatusBadge key={st} s={st} />
+                          ))}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <span className="num truncate">{shortAddr(t.address)}</span>
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              navigator.clipboard.writeText(t.address);
+                            }}
+                            title="Copy contract address"
+                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </button>
+                          <a
+                            href={`${chain.explorerUrl}/token/${t.address}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="View on explorer"
+                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              watchlist.toggle(t.address);
+                            }}
+                            title={
+                              watchlist.has(t.address)
+                                ? "Remove from watchlist"
+                                : "Add to watchlist"
+                            }
+                            className={`transition-opacity hover:text-foreground ${
+                              watchlist.has(t.address)
+                                ? "text-primary opacity-100"
+                                : "opacity-0 group-hover:opacity-100"
+                            }`}
+                          >
+                            <Star
+                              className={`h-3 w-3 ${watchlist.has(t.address) ? "fill-current" : ""}`}
+                            />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                        <span className="num truncate">{shortAddr(t.address)}</span>
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            navigator.clipboard.writeText(t.address);
-                          }}
-                          title="Copy contract address"
-                          className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                        >
-                          <Copy className="h-3 w-3" />
-                        </button>
-                        <a
-                          href={`${chain.explorerUrl}/token/${t.address}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          title="View on explorer"
-                          className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            watchlist.toggle(t.address);
-                          }}
-                          title={
-                            watchlist.has(t.address) ? "Remove from watchlist" : "Add to watchlist"
-                          }
-                          className={`transition-opacity hover:text-foreground ${
-                            watchlist.has(t.address)
-                              ? "text-primary opacity-100"
-                              : "opacity-0 group-hover:opacity-100"
-                          }`}
-                        >
-                          <Star
-                            className={`h-3 w-3 ${watchlist.has(t.address) ? "fill-current" : ""}`}
-                          />
-                        </button>
-                      </div>
+                    </Link>
+                  </td>
+                  <td className="num px-1.5 py-2 text-xs text-muted-foreground">
+                    {formatAge(t.ageMinutes)}
+                  </td>
+                  <td className="px-1.5 py-2 text-right">
+                    <div className="num text-xs leading-tight">
+                      {t.price > 0 ? formatUSD(t.price) : "—"}
                     </div>
-                  </Link>
-                </td>
-                <td className="num px-1.5 py-2 text-xs text-muted-foreground">
-                  {formatAge(t.ageMinutes)}
-                </td>
-                <td className="px-1.5 py-2 text-right">
-                  <div className="num text-xs leading-tight">
-                    {t.price > 0 ? formatUSD(t.price) : "—"}
-                  </div>
-                  <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
-                </td>
-                <td className="px-1.5 py-2 text-center">
-                  <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
-                </td>
-                {/* Market cap over 24h volume — one column, two figures. */}
-                <td className="px-1.5 py-2 text-right">
-                  <div className="num text-xs leading-tight">{usdOrDash(t.mcap)}</div>
-                  <div className="num text-[11px] leading-tight text-muted-foreground">
-                    {usdOrDash(t.vol24h)}
-                  </div>
-                </td>
-                {/* Buys/sells over holders. */}
-                <td className="px-1.5 py-2 text-right">
-                  <Txns24h buys={t.buys24h} sells={t.sells24h} />
-                  <div className="flex items-center justify-end gap-1.5 leading-tight">
-                    <span className="num text-[11px] text-muted-foreground">
-                      {t.holders > 0 ? formatNum(t.holders) : "—"}
-                    </span>
-                    <WhaleHolders count={insights?.[t.address]?.whaleHolders} />
-                  </div>
-                </td>
-                {/* Dev holding over top-10 concentration. */}
-                <td className="px-1.5 py-2 text-right leading-tight">
-                  <div>
-                    <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
-                  </div>
-                  <div>
-                    <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
-                  </div>
-                </td>
-                {/* Bundle risk over DexScreener paid state. */}
-                <td className="px-1.5 py-2 text-center leading-tight">
-                  <div>
-                    <BundleCell stats={bundles?.[t.address]} />
-                  </div>
-                  <div>
-                    <DexPaidCell
-                      paid={insights?.[t.address]?.dexPaid}
-                      unsupported={insights?.[t.address]?.dexUnsupported}
-                    />
-                  </div>
-                </td>
-                {/* Venue over social heat. */}
-                <td className="px-1.5 py-2 leading-tight">
-                  <VenueCell t={t} />
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <div className="h-1 w-10 overflow-hidden rounded-full bg-secondary">
-                      <div
-                        className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
-                        style={{ width: `${t.socialHeat}%` }}
+                    <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
+                  </td>
+                  <td className="px-1.5 py-2 text-center">
+                    <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
+                  </td>
+                  {/* Market cap over 24h volume — one column, two figures. */}
+                  <td className="px-1.5 py-2 text-right">
+                    <div className="num text-xs leading-tight">{usdOrDash(t.mcap)}</div>
+                    <div className="num text-[11px] leading-tight text-muted-foreground">
+                      {usdOrDash(t.vol24h)}
+                    </div>
+                  </td>
+                  {/* Buys/sells over holders. */}
+                  <td className="px-1.5 py-2 text-right">
+                    <Txns24h buys={t.buys24h} sells={t.sells24h} />
+                    <div className="flex items-center justify-end gap-1.5 leading-tight">
+                      <span className="num text-[11px] text-muted-foreground">
+                        {t.holders > 0 ? formatNum(t.holders) : "—"}
+                      </span>
+                      <WhaleHolders count={insights?.[t.address]?.whaleHolders} />
+                    </div>
+                  </td>
+                  {/* Dev holding over top-10 concentration. */}
+                  <td className="px-1.5 py-2 text-right leading-tight">
+                    <div>
+                      <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
+                    </div>
+                    <div>
+                      <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
+                    </div>
+                  </td>
+                  {/* Bundle risk over DexScreener paid state. */}
+                  <td className="px-1.5 py-2 text-center leading-tight">
+                    <div>
+                      <BundleCell stats={bundles?.[t.address]} />
+                    </div>
+                    <div>
+                      <DexPaidCell
+                        paid={insights?.[t.address]?.dexPaid}
+                        unsupported={insights?.[t.address]?.dexUnsupported}
                       />
                     </div>
-                    <span className="num text-[10px] text-muted-foreground">
-                      {t.socialHeat > 0 ? t.socialHeat : "—"}
-                    </span>
-                  </div>
-                </td>
-                {/* Actions side by side so the row stays one line tall. */}
-                <td className="px-3 py-2">
-                  <div className="flex items-center justify-end gap-1">
-                    <button
-                      onClick={() => {
-                        // Just open the dialog. Firing a speculative connect()
-                        // here raced the dialog's own click: the wallet prompt
-                        // opened behind the modal and the second request was
-                        // swallowed as a duplicate.
-                        setBuyToken(t);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-                    >
-                      <Zap className="h-3 w-3" /> Buy
-                    </button>
-                    <a
-                      href={baseBotUrl(t.address)}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      title={`Trade ${t.symbol} on BaseBot`}
-                      className="inline-flex items-center rounded-md border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-                    >
-                      <Send className="h-3 w-3" />
-                    </a>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                  </td>
+                  {/* Venue over social heat. */}
+                  <td className="px-1.5 py-2 leading-tight">
+                    <VenueCell t={t} />
+                    <div className="mt-0.5 flex items-center gap-1.5">
+                      <div className="h-1 w-10 overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
+                          style={{ width: `${t.socialHeat}%` }}
+                        />
+                      </div>
+                      <span className="num text-[10px] text-muted-foreground">
+                        {t.socialHeat > 0 ? t.socialHeat : "—"}
+                      </span>
+                    </div>
+                  </td>
+                  {/* Actions side by side so the row stays one line tall. */}
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => {
+                          // Just open the dialog. Firing a speculative connect()
+                          // here raced the dialog's own click: the wallet prompt
+                          // opened behind the modal and the second request was
+                          // swallowed as a duplicate.
+                          setBuyToken(t);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                      >
+                        <Zap className="h-3 w-3" /> Buy
+                      </button>
+                      <a
+                        href={baseBotUrl(t.address)}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title={`Trade ${t.symbol} on BaseBot`}
+                        className="inline-flex items-center rounded-md border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                      >
+                        <Send className="h-3 w-3" />
+                      </a>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {buyToken && <QuickBuyModal token={buyToken} onClose={() => setBuyToken(null)} />}
     </section>
