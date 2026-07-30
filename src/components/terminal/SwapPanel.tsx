@@ -161,6 +161,9 @@ export function SwapPanel({
         minOut: quote.minOut,
         feeTier: quote.feeTier,
         route: quote.route,
+        // Refused if the quote has gone stale — minOut would be protecting a
+        // price that no longer exists.
+        quotedAt: quote.quotedAt,
       });
       setTxHash(res.swapTxHash ?? res.feeTxHash ?? null);
       setStatus("Submitted. Track it on the explorer.");

@@ -19,7 +19,7 @@ import {
   type ChartTimeframe,
 } from "@/lib/data/hooks";
 import { baseBotUrl } from "@/config/links";
-import { venueLogo } from "@/config/brand";
+import { venueLogo, BRAND_CARD_URL, SITE_URL } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
 import { useShareOfVoice } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
@@ -32,16 +32,32 @@ const TIMEFRAMES: { key: ChartTimeframe; label: string }[] = [
 ];
 
 export const Route = createFileRoute("/token/$address")({
-  head: ({ params }) => ({
-    meta: [
-      { title: `${shortAddr(params.address)} · UnstableStonks` },
-      {
-        name: "description",
-        content: `Live on-chain view: market data, holders, X social heat, and non-custodial trading for ${shortAddr(params.address)}.`,
-      },
-      { name: "robots", content: "noindex" },
-    ],
-  }),
+  head: ({ params }) => {
+    const title = `${shortAddr(params.address)} · UnstableStonks`;
+    const description = `Live on-chain view: market data, top holders, whale activity, X social heat and non-custodial trading for ${shortAddr(params.address)}.`;
+    return {
+      meta: [
+        { title },
+        { name: "description", content: description },
+        // noindex, but NOT nofollow. There are potentially thousands of these,
+        // most for tokens that won't exist next week — indexing them would bury
+        // the one page worth ranking under a mountain of thin duplicates. The
+        // links out still count, and the card below still renders, because
+        // social crawlers read og:* regardless of the robots directive.
+        { name: "robots", content: "noindex, follow" },
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:image", content: BRAND_CARD_URL },
+        { property: "og:type", content: "website" },
+        { property: "og:site_name", content: "UnstableStonks" },
+        { name: "twitter:card", content: "summary_large_image" },
+        { name: "twitter:title", content: title },
+        { name: "twitter:description", content: description },
+        { name: "twitter:image", content: BRAND_CARD_URL },
+      ],
+      links: [{ rel: "canonical", href: `${SITE_URL}/token/${params.address.toLowerCase()}` }],
+    };
+  },
   component: TokenDetail,
 });
 

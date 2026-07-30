@@ -1,4 +1,4 @@
-import { parseUnits, formatUnits, type WalletClient } from "viem";
+import { encodeFunctionData, parseUnits, formatUnits, type WalletClient } from "viem";
 import {
   CHAINS,
   FEE_RECIPIENT,
@@ -132,6 +132,21 @@ const QUOTER_V2_ABI = [
 
 const V3_ROUTER_ABI = [
   {
+    // SwapRouter02 dropped `deadline` from the swap structs and exposes it here
+    // instead. Without it a swap has NO expiry: a transaction stuck in the
+    // mempool can be mined minutes later, at a price nobody agreed to, and the
+    // only protection left is amountOutMinimum from a quote that is by then
+    // stale. Every V3 swap goes through this.
+    type: "function",
+    name: "multicall",
+    stateMutability: "payable",
+    inputs: [
+      { name: "deadline", type: "uint256" },
+      { name: "data", type: "bytes[]" },
+    ],
+    outputs: [{ name: "", type: "bytes[]" }],
+  },
+  {
     type: "function",
     name: "exactInputSingle",
     stateMutability: "payable",
@@ -197,7 +212,22 @@ export interface SwapQuote {
   route?: SwapRoute;
   /** Human label, e.g. "USDT0 → WETH → TOKEN". */
   routeLabel?: string;
+  /** When this quote was produced. Execution refuses a stale one. */
+  quotedAt?: number;
 }
+
+/**
+ * How old a quote may be at execution time.
+ *
+ * minOut is computed from the quote, so an old quote means the slippage floor
+ * describes a price that no longer exists. Two minutes is long enough to read
+ * the panel and confirm in a wallet, short enough that the floor still means
+ * something.
+ */
+export const QUOTE_MAX_AGE_MS = 120_000;
+
+/** Slippage is clamped: 5% is generous for a launchpad, and 100% is a giveaway. */
+const MAX_SLIPPAGE_BPS = 500;
 
 /**
  * Format a JS number for parseUnits. `Number.toString()` emits exponent notation
@@ -433,7 +463,10 @@ export async function quoteSwap(
     }
 
     const amountOut = Number(formatUnits(outWei, outDecimals));
-    const minOut = amountOut * (1 - slippageBps / 10_000);
+    // Clamped, so a bad slippage value can never collapse minOut toward zero and
+    // hand the whole trade to a sandwich.
+    const slip = Math.min(Math.max(slippageBps, 0), MAX_SLIPPAGE_BPS);
+    const minOut = amountOut * (1 - slip / 10_000);
     return {
       ok: true,
       amountOut,
@@ -443,6 +476,7 @@ export async function quoteSwap(
       feeTier: best?.fees[best.fees.length - 1],
       route: best,
       routeLabel: best?.tokens.map((t) => shortSym(cfg, t)).join(" → "),
+      quotedAt: Date.now(),
     };
   } catch (e) {
     return {
@@ -479,10 +513,26 @@ export async function executeSwap(params: {
   feeTier?: number;
   /** Route the quote resolved to. Falls back to the direct pair. */
   route?: SwapRoute;
+  /** When the quote was produced — a stale one is refused. */
+  quotedAt?: number;
 }): Promise<SwapExecution> {
   const { chainKey, walletClient, account, side, amountIn, token, tokenDecimals, minOut } = params;
   const cfg = CHAINS[chainKey];
   if (!swapEnabled(cfg)) throw new Error(`Swaps are not enabled on ${cfg.name} yet.`);
+
+  // A stale quote means minOut protects a price that no longer exists.
+  if (params.quotedAt != null && Date.now() - params.quotedAt > QUOTE_MAX_AGE_MS) {
+    throw new Error("This quote has expired. Check the amount and try again.");
+  }
+
+  // The wallet must be on the chain we're building for. viem checks this too,
+  // but only against the client's own configured chain — if the user switched
+  // networks between pressing the button and signing, that check passes while
+  // the transaction lands somewhere else entirely.
+  const connected = await walletClient.getChainId().catch(() => 0);
+  if (connected !== cfg.id) {
+    throw new Error(`Your wallet is on the wrong network. Switch to ${cfg.name} and try again.`);
+  }
 
   const inter = getIntermediary(cfg)!;
   const interAddr = inter.address;
@@ -511,15 +561,57 @@ export async function executeSwap(params: {
   const chain = walletClient.chain;
 
   /**
-   * One V3 swap call. A multi-hop route goes through `exactInput` with the
-   * encoded path; a direct pair keeps the cheaper `exactInputSingle`.
+   * Approve exactly what the swap needs, resetting first when a stale non-zero
+   * allowance is in the way.
+   *
+   * USDT-lineage tokens revert on approve() when the current allowance is
+   * non-zero — a deliberate anti-front-running measure in Tether's contract.
+   * Stable's gas asset IS a Tether token (USDT0), so a user with any leftover
+   * allowance smaller than the new amount hit a swap that reverted on the
+   * approval and never reached the router. Zeroing first is the standard
+   * workaround and costs an extra signature only in that exact case.
+   *
+   * The approval is for the exact amount, never unlimited: a router that is
+   * later compromised can only take what this trade needed.
    */
-  const swapV3 = (amountInWei: bigint, minOutWei: bigint, value?: bigint) =>
+  const approveExact = async (
+    erc20: `0x${string}`,
+    spender: `0x${string}`,
+    needed: bigint,
+  ): Promise<`0x${string}` | undefined> => {
+    const allowance = await getErc20Allowance(chainKey, erc20, account, spender);
+    if (allowance >= needed) return undefined;
+    if (allowance > 0n) {
+      await walletClient.writeContract({
+        account,
+        chain,
+        address: erc20,
+        abi: ERC20_TX_ABI,
+        functionName: "approve",
+        args: [spender, 0n],
+      });
+    }
+    return walletClient.writeContract({
+      account,
+      chain,
+      address: erc20,
+      abi: ERC20_TX_ABI,
+      functionName: "approve",
+      args: [spender, needed],
+    });
+  };
+
+  /**
+   * One V3 swap call, wrapped in SwapRouter02's `multicall(deadline, data)`.
+   *
+   * The deadline is the whole point of the wrapper. SwapRouter02's swap structs
+   * carry no expiry of their own, so a bare exactInput can sit in the mempool
+   * and be mined at a price nobody agreed to — with only a by-then-stale
+   * amountOutMinimum standing between the user and a bad fill.
+   */
+  const encodeSwap = (amountInWei: bigint, minOutWei: bigint) =>
     v3Path
-      ? walletClient.writeContract({
-          account,
-          chain,
-          address: router,
+      ? encodeFunctionData({
           abi: V3_ROUTER_ABI,
           functionName: "exactInput",
           args: [
@@ -530,12 +622,8 @@ export async function executeSwap(params: {
               amountOutMinimum: minOutWei,
             },
           ],
-          value,
         })
-      : walletClient.writeContract({
-          account,
-          chain,
-          address: router,
+      : encodeFunctionData({
           abi: V3_ROUTER_ABI,
           functionName: "exactInputSingle",
           args: [
@@ -549,8 +637,49 @@ export async function executeSwap(params: {
               sqrtPriceLimitX96: 0n,
             },
           ],
-          value,
         });
+
+  const v3Args = (amountInWei: bigint, minOutWei: bigint) =>
+    ({
+      account,
+      chain,
+      address: router,
+      abi: V3_ROUTER_ABI,
+      functionName: "multicall" as const,
+      args: [deadline, [encodeSwap(amountInWei, minOutWei)]] as const,
+    }) as const;
+
+  const swapV3 = (amountInWei: bigint, minOutWei: bigint, value?: bigint) =>
+    walletClient.writeContract({ ...v3Args(amountInWei, minOutWei), value });
+
+  /**
+   * Prove the swap works before taking a fee for it.
+   *
+   * The fee is a separate transaction that must go first — the router pulls the
+   * remainder, so the balance has to be split beforehand. That ordering means a
+   * swap which was always going to revert would still cost the user 1%. A
+   * simulation costs nothing and closes that: if the swap can't succeed, nobody
+   * pays anything.
+   *
+   * A simulation that fails for an unrelated reason (the fee hasn't moved yet,
+   * so allowances and balances differ) must not block a good trade, so only a
+   * definite revert of the swap logic stops us.
+   */
+  const client = getPublicClient(chainKey);
+  const assertSwapViable = async (amountInWei: bigint, minOutWei: bigint, value?: bigint) => {
+    if (!isV3) return;
+    try {
+      await client.simulateContract({ ...v3Args(amountInWei, minOutWei), account, value });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      // Balance and allowance shortfalls are expected here: the fee transfer and
+      // the approval haven't happened yet at simulation time.
+      if (/transfer amount exceeds|insufficient|allowance|STF|balance/i.test(msg)) return;
+      throw new Error(
+        `This swap would fail — no fee has been charged. ${msg.split("\n")[0] || "Try a different amount."}`,
+      );
+    }
+  };
 
   if (side === "buy") {
     const feeWei = parseUnits(amountToString(feeAmount, inter.decimals), inter.decimals);
@@ -560,6 +689,8 @@ export async function executeSwap(params: {
     if (inter.mode === "erc20") {
       // Buy funded by the ERC-20 gas token (USDT0). Fee is an ERC-20 transfer,
       // and the router pulls the remainder via transferFrom — no native value.
+      await assertSwapViable(swapWei, minOutWei);
+
       // 1. Protocol fee → treasury.
       result.feeTxHash = await walletClient.writeContract({
         account,
@@ -571,22 +702,14 @@ export async function executeSwap(params: {
       });
 
       // 2. Approve the router for the swap remainder if needed.
-      const allowance = await getErc20Allowance(chainKey, interAddr, account, router);
-      if (allowance < swapWei) {
-        result.approveTxHash = await walletClient.writeContract({
-          account,
-          chain,
-          address: interAddr,
-          abi: ERC20_TX_ABI,
-          functionName: "approve",
-          args: [router, swapWei],
-        });
-      }
+      result.approveTxHash = await approveExact(interAddr, router, swapWei);
 
       // 3. Router swap along the quoted route (no native value).
       result.swapTxHash = await swapV3(swapWei, minOutWei);
     } else {
       // Native path: fee is a native transfer; the router wraps the value.
+      await assertSwapViable(swapWei, minOutWei, swapWei);
+
       // 1. Protocol fee → treasury (native transfer).
       result.feeTxHash = await walletClient.sendTransaction({
         account,
@@ -614,6 +737,8 @@ export async function executeSwap(params: {
     const swapWei = parseUnits(amountToString(swapAmount, tokenDecimals), tokenDecimals);
     const minOutWei = parseUnits(amountToString(minOut, inter.decimals), inter.decimals);
 
+    await assertSwapViable(swapWei, minOutWei);
+
     // 1. Protocol fee → treasury (ERC-20 transfer of the token being sold).
     result.feeTxHash = await walletClient.writeContract({
       account,
@@ -625,17 +750,7 @@ export async function executeSwap(params: {
     });
 
     // 2. Approve router for the swap remainder if needed.
-    const allowance = await getErc20Allowance(chainKey, token, account, router);
-    if (allowance < swapWei) {
-      result.approveTxHash = await walletClient.writeContract({
-        account,
-        chain,
-        address: token,
-        abi: ERC20_TX_ABI,
-        functionName: "approve",
-        args: [router, swapWei],
-      });
-    }
+    result.approveTxHash = await approveExact(token, router, swapWei);
 
     // 3. Router swap token → intermediary. On V3 the output settles as the
     //    intermediary ERC-20 (USDT0, or wrapped-native) in the seller's wallet.

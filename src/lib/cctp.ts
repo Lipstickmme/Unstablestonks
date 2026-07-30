@@ -48,7 +48,7 @@ const IRIS_SANDBOX = "https://iris-api-sandbox.circle.com";
  * trade on (Ethereum, Base, Arbitrum). Cached per chain id.
  */
 const clients = new Map<number, PublicClient>();
-function clientFor(c: BridgeChain): PublicClient {
+export function clientFor(c: BridgeChain): PublicClient {
   const hit = clients.get(c.id);
   if (hit) return hit;
   const client = createPublicClient({
@@ -272,6 +272,14 @@ export async function bridgeViaCctp(params: {
   const client = clientFor(from);
   const chain = sourceWallet.chain;
 
+  // Burning is irreversible, so confirm the wallet is actually on the source
+  // chain before anything is signed. Signing a burn against the wrong network
+  // sends USDC to whatever contract sits at the TokenMessenger address there.
+  const connected = await sourceWallet.getChainId().catch(() => 0);
+  if (connected !== from.id) {
+    throw new Error(`Your wallet is on the wrong network. Switch to ${from.name} and try again.`);
+  }
+
   const fee = (amount * BigInt(PLATFORM_FEE_BPS)) / 10_000n;
   const bridged = amount - fee;
   if (bridged <= 0n) throw new Error("Amount too small to bridge.");
@@ -303,7 +311,24 @@ export async function bridgeViaCctp(params: {
   }
 
   // 2. Approve the burner for the remainder if needed.
+  //
+  // Reset a stale non-zero allowance first: USDC's own contract doesn't require
+  // it, but this same path carries USDT-lineage tokens on Stable, whose approve
+  // reverts outright when the current allowance is non-zero. The approval is for
+  // the exact amount rather than unlimited.
   if (needsApproval) {
+    if (allowance > 0n) {
+      prompt();
+      const zeroHash = await sourceWallet.writeContract({
+        account,
+        chain,
+        address: usdc,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [TOKEN_MESSENGER_V2, 0n],
+      });
+      await client.waitForTransactionReceipt({ hash: zeroHash });
+    }
     prompt();
     const approveHash = await sourceWallet.writeContract({
       account,
@@ -359,6 +384,17 @@ export async function bridgeViaCctp(params: {
   const destWallet = await destinationWallet();
   if (!destWallet) {
     throw new Error(`Switch your wallet to ${to.name} to receive the funds.`);
+  }
+
+  // Same check on the receiving side. The attestation is already signed and the
+  // funds are recoverable, so a wrong-network mint is not a loss — but it does
+  // burn gas calling an unrelated contract, and the error it produces is
+  // unreadable. Better to say what's wrong.
+  const destConnected = await destWallet.getChainId().catch(() => 0);
+  if (destConnected !== to.id) {
+    throw new Error(
+      `Switch your wallet to ${to.name} to receive the funds. Your USDC is safe — reopen the bridge to finish.`,
+    );
   }
 
   const mintHash = await destWallet.writeContract({

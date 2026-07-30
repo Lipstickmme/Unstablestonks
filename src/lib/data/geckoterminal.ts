@@ -406,16 +406,6 @@ interface GtOhlcvResp {
   data?: { attributes?: { ohlcv_list?: number[][] } };
 }
 
-/** Real close-price series for a pool (oldest→newest). Empty when not indexed. */
-export async function fetchOhlcv(
-  cfg: ChainConfig,
-  pool: string,
-  timeframe: "minute" | "hour" | "day" = "hour",
-): Promise<number[]> {
-  const candles = await fetchOhlcvCandles(cfg, pool, timeframe);
-  return candles.map((c) => c.c);
-}
-
 export interface Candle {
   t: number; // unix seconds
   o: number;

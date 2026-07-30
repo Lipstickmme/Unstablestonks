@@ -12,7 +12,8 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ChainProvider } from "../lib/chain-context";
-import { BRAND_CARD_URL, FAVICONS } from "../config/brand";
+import { BRAND_CARD_URL, FAVICONS, SITE_URL } from "../config/brand";
+import { COMMUNITY } from "../config/links";
 import { trackEvent } from "../lib/store";
 import { WalletProvider } from "../lib/wallet";
 import { WatchlistProvider } from "../lib/watchlist";
@@ -67,6 +68,55 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   );
 }
 
+/**
+ * Structured data.
+ *
+ * Two things it buys that meta tags can't. `sameAs` ties the X and Telegram
+ * accounts to this site as one entity, so the profiles and the app reinforce
+ * each other instead of ranking as strangers — which is the main reason the
+ * footer links are worth having at all. And SearchAction declares the in-app
+ * token search, which is what a sitelinks search box is built from.
+ *
+ * Everything here is a fact about the app. No ratings, no fake review counts —
+ * invented markup is a manual-action risk, not a ranking trick.
+ */
+const STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebApplication",
+      "@id": `${SITE_URL}/#app`,
+      name: "UnstableStonks",
+      url: SITE_URL,
+      applicationCategory: "FinanceApplication",
+      operatingSystem: "Web",
+      description:
+        "Non-custodial multichain launchpad terminal for Stable, Robinhood Chain and Arc. Live on-chain token discovery, whale tracking, X social heat and one-click swaps.",
+      image: BRAND_CARD_URL,
+      // Free to use. The 1% swap fee is charged on-chain per trade, not for
+      // access, so the app itself has no price.
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      publisher: { "@id": `${SITE_URL}/#org` },
+      potentialAction: {
+        "@type": "SearchAction",
+        target: {
+          "@type": "EntryPoint",
+          urlTemplate: `${SITE_URL}/?q={search_term_string}`,
+        },
+        "query-input": "required name=search_term_string",
+      },
+    },
+    {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#org`,
+      name: "UnstableStonks",
+      url: SITE_URL,
+      logo: BRAND_CARD_URL,
+      sameAs: [COMMUNITY.x, COMMUNITY.telegramChannel, COMMUNITY.telegramGroup],
+    },
+  ],
+};
+
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
     meta: [
@@ -88,6 +138,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { property: "og:image", content: BRAND_CARD_URL },
       { property: "og:image:alt", content: "UnstableStonks" },
       { property: "og:type", content: "website" },
+      // Without og:url a crawler attributes shares to whatever URL it happened
+      // to fetch — a preview deployment, or a link with tracking params.
+      { property: "og:url", content: SITE_URL },
+      { property: "og:site_name", content: "UnstableStonks" },
+      { property: "og:locale", content: "en_US" },
+      { name: "twitter:site", content: "@Unstablestonks" },
+      { name: "twitter:creator", content: "@Unstablestonks" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:title", content: "UnstableStonks — multichain launchpad terminal" },
       {
@@ -97,9 +154,22 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { name: "twitter:image", content: BRAND_CARD_URL },
       { name: "theme-color", content: "#0b0b0d" },
+      // Explicit rather than implied: the default is to index, but stating it
+      // stops a stray header or a platform default from deciding otherwise, and
+      // max-image-preview:large is what lets the card show at full width in
+      // search results rather than as a thumbnail.
+      {
+        name: "robots",
+        content: "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1",
+      },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
+      // One canonical home for the terminal. The view tabs (?view=watch,
+      // ?view=portfolio) and any search query are the SAME page with a filter
+      // applied — without this they'd compete with each other for the same
+      // terms and split whatever authority the page earns.
+      { rel: "canonical", href: SITE_URL },
       // Each platform gets the size it asks for rather than one big image the
       // browser has to squash.
       { rel: "icon", href: FAVICONS.png32, type: "image/png", sizes: "32x32" },
@@ -119,6 +189,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         href: "https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap",
       },
     ],
+    scripts: [{ type: "application/ld+json", children: JSON.stringify(STRUCTURED_DATA) }],
   }),
   shellComponent: RootShell,
   component: RootComponent,

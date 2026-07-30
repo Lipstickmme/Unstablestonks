@@ -128,10 +128,4 @@ export async function kvIncr(key: string): Promise<number | null> {
   return command<number>(["INCR", key]);
 }
 
-/** Add to a set. Returns true when the member was new. */
-export async function kvSetAdd(key: string, member: string): Promise<boolean | null> {
-  const added = await command<number>(["SADD", key, member]);
-  return added == null ? null : added === 1;
-}
-
 export { command as kvCommand, pipeline as kvPipeline };

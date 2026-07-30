@@ -1,0 +1,17 @@
+# UnstableStonks
+
+User-agent: *
+Allow: /
+
+# Token pages are noindex in their own markup — thousands of thin, fast-changing
+# pages for tokens that mostly won't exist next week. Disallowing them here too
+# would stop crawlers ever READING that noindex, so they stay crawlable and
+# simply ask not to be indexed. The same reasoning keeps the filtered views
+# crawlable: they carry a canonical back to the home page.
+
+# Nothing here is worth a crawl budget.
+Disallow: /api/
+Disallow: /_build/
+Disallow: /*?q=
+
+Sitemap: https://unstablestonks.vercel.app/sitemap.xml

@@ -187,13 +187,3 @@ export async function fetchDyorToken(
   }
   return null;
 }
-
-/**
- * Fallback curve progress when the API can't be reached: how far the pool's
- * liquidity has come toward the documented target. Approximate by construction,
- * so callers must label it as an estimate.
- */
-export function estimateCurveProgress(liquidityUsd: number, target = DYOR_CURVE_TARGET_V3): number {
-  if (!(liquidityUsd > 0)) return 0;
-  return Math.max(0, Math.min(100, (liquidityUsd / target) * 100));
-}

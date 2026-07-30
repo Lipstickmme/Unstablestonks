@@ -1,7 +1,7 @@
 import type { WalletClient } from "viem";
 import { FEE_RECIPIENT, PLATFORM_FEE_BPS } from "@/config/chains";
 import { bridgeChain, type BridgeChain } from "@/config/bridge-chains";
-import { cctpStatus } from "./cctp";
+import { cctpStatus, clientFor } from "./cctp";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-chain transfers.
@@ -246,8 +246,16 @@ export async function executeBridge(params: {
   from: BridgeChain;
   onProgress?: (p: BridgeProgress) => void;
 }): Promise<`0x${string}` | undefined> {
-  const { quote, walletClient, account, onProgress } = params;
+  const { quote, walletClient, account, from, onProgress } = params;
   const chain = walletClient.chain;
+
+  // The wallet must be where we think it is. Relay steps are chain-specific,
+  // and signing one against a different network sends real calldata to whatever
+  // contract happens to sit at that address there.
+  const connected = await walletClient.getChainId().catch(() => 0);
+  if (connected !== from.id) {
+    throw new Error(`Your wallet is on the wrong network. Switch to ${from.name} and try again.`);
+  }
 
   // Only transaction steps need a wallet prompt; Relay handles the rest.
   const txItems = quote.steps
@@ -259,7 +267,27 @@ export async function executeBridge(params: {
     throw new Error("Nothing to sign for this route.");
   }
 
+  // Every step is calldata handed to us by a remote API and signed by the user's
+  // wallet, so it is validated before it is offered for signature. A quote
+  // response is not a trusted instruction.
+  for (const item of txItems) {
+    const d = item.data!;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(d.to ?? "")) {
+      throw new Error("The bridge returned an invalid destination. Aborted.");
+    }
+    // A step tagged for another chain must never be signed on this one.
+    if (d.chainId != null && d.chainId !== from.id) {
+      throw new Error("The bridge returned a step for a different network. Aborted.");
+    }
+    // Native value can only ever be spent from the account doing the bridging.
+    if (d.from && d.from.toLowerCase() !== account.toLowerCase()) {
+      throw new Error("The bridge returned a step for a different account. Aborted.");
+    }
+  }
+
   let last: `0x${string}` | undefined;
+  const client = clientFor(from);
+
   for (let i = 0; i < txItems.length; i++) {
     const d = txItems[i].data!;
     onProgress?.({
@@ -276,6 +304,13 @@ export async function executeBridge(params: {
       data: d.data,
       value: d.value ? BigInt(d.value) : undefined,
     });
+
+    // Wait for each step before offering the next. Relay routes are ordered —
+    // an approval precedes the transfer that depends on it — and firing them
+    // back to back meant the second could be mined first and revert.
+    if (i < txItems.length - 1) {
+      await client.waitForTransactionReceipt({ hash: last }).catch(() => undefined);
+    }
   }
 
   onProgress?.({ message: "Bridging — funds arrive shortly.", txHash: last, done: true });

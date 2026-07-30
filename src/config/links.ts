@@ -43,9 +43,6 @@ export function baseBotUrl(tokenAddress?: string): string {
   return base + payload;
 }
 
-/** Plain referral link, for places with no token context. */
-export const BASE_BOT_URL = baseBotUrl();
-
 /** Community endpoints used by the whitelist quest. */
 export const COMMUNITY = {
   telegramGroup: "https://t.me/UnstableStonk",

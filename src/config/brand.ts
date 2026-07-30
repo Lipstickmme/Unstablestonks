@@ -20,8 +20,19 @@ export const BRAND_IMAGE_URL = env("VITE_BRAND_IMAGE") ?? "/unstablestonkslogo.j
  * so a site URL is needed to serve the local file; without one we fall back to
  * the IPFS-hosted copy, which is absolute and already correct.
  */
-const SITE_URL = env("VITE_SITE_URL")?.replace(/\/$/, "");
-export const BRAND_CARD_URL = SITE_URL
+/**
+ * The deployed origin, no trailing slash.
+ *
+ * Used for the social card, canonical URLs and structured data. Falls back to
+ * the production domain so search engines get an absolute canonical even from a
+ * preview build that forgot the env var — a relative or missing canonical is
+ * worse than a slightly wrong one, because it lets a preview deployment compete
+ * with production for the same query.
+ */
+export const SITE_URL =
+  env("VITE_SITE_URL")?.replace(/\/$/, "") ?? "https://unstablestonks.vercel.app";
+
+export const BRAND_CARD_URL = env("VITE_SITE_URL")
   ? `${SITE_URL}${BRAND_IMAGE_URL}`
   : "https://silver-administrative-caribou-620.mypinata.cloud/ipfs/bafkreibe5jv5xc62xj2cddfypwk54mgz2tdpf4m47zmn2zaas6ycxi5mvq";
 

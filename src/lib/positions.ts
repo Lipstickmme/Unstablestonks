@@ -133,8 +133,3 @@ export function recordSell(
     lifetimeUsd,
   };
 }
-
-/** Recorded position in a token, for panels that want to show a basis. */
-export function readPosition(chain: ChainKey, token: string): Lot | undefined {
-  return read()[slot(chain, token)];
-}

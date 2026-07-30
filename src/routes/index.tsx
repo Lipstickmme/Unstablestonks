@@ -119,6 +119,16 @@ function Terminal() {
       <Header />
 
       <div className="mx-auto max-w-[1600px] space-y-4 px-3 py-4 sm:px-5 sm:py-5">
+        {/* The page had no h1 at all — a crawler had nothing but the <title> to
+            work out what this is. Visually it's a one-line strapline above the
+            stats; structurally it's the document heading, and it names the
+            chain in view so the heading changes with the content. */}
+        <h1 className="sr-only sm:not-sr-only sm:mb-1 sm:block sm:text-sm sm:font-normal sm:text-muted-foreground">
+          <span className="text-foreground font-medium">UnstableStonks</span> — live {chain.name}{" "}
+          launchpad terminal: new token discovery, whale tracking, X social heat and non-custodial
+          swaps.
+        </h1>
+
         <div className="fade-up">
           <StatsOverview
             stats={statsQ.data}

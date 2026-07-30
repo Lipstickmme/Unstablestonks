@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Deliberately small. Only the terminal itself is a stable, indexable URL: the
+  view tabs are the same page filtered and canonicalise back here, and token
+  pages are noindex by design. A sitemap padded with URLs that resolve to one
+  canonical is noise, not coverage.
+
+  These are static files, so the domain is literal — update both this and
+  robots.txt if the production domain ever changes.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://unstablestonks.vercel.app/</loc>
+    <changefreq>hourly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>
