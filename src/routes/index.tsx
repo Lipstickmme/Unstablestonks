@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { Header } from "@/components/terminal/Header";
+import { Footer } from "@/components/terminal/Footer";
 import { StatsOverview } from "@/components/terminal/StatsOverview";
 import { TokenTable } from "@/components/terminal/TokenTable";
 import { HotSignals } from "@/components/terminal/HotSignals";
@@ -176,6 +177,8 @@ function Terminal() {
           </p>
         </div>
       </div>
+
+      <Footer />
     </div>
   );
 }

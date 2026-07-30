@@ -34,20 +34,88 @@ const BROWSER_HEADERS: Record<string, string> = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Circuit breaker, per host.
+//
+// This is what made Stable feel slow next to Robinhood. Robinhood's Blockscout
+// answers on the first hop; Stable's configured explorer host does not resolve
+// at all, and every single call to it walked the origin plus five proxies, each
+// waiting out its own timeout — up to forty seconds for a request that was
+// never going to succeed. The directory lane awaits those calls, so the whole
+// token list sat behind a host that was already known to be dead.
+//
+// After a few consecutive failures a host is skipped outright for a cooldown.
+// A dead origin fails in microseconds instead of forty seconds, and the sources
+// that DO work paint immediately. The cooldown is short so a host that recovers
+// is picked back up on its own, and one success clears the record entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FAIL_THRESHOLD = 3;
+const COOLDOWN_MS = 3 * 60_000;
+
+const breaker = new Map<string, { fails: number; openUntil: number }>();
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function isOpen(host: string): boolean {
+  const s = breaker.get(host);
+  if (!s) return false;
+  if (s.openUntil > Date.now()) return true;
+  // Cooldown elapsed — let one request through to see if it recovered.
+  if (s.openUntil) breaker.set(host, { fails: FAIL_THRESHOLD - 1, openUntil: 0 });
+  return false;
+}
+
+function noteFailure(host: string): void {
+  const s = breaker.get(host) ?? { fails: 0, openUntil: 0 };
+  const fails = s.fails + 1;
+  breaker.set(host, {
+    fails,
+    openUntil: fails >= FAIL_THRESHOLD ? Date.now() + COOLDOWN_MS : 0,
+  });
+}
+
+function noteSuccess(host: string): void {
+  if (breaker.has(host)) breaker.delete(host);
+}
+
+/** Hosts currently being skipped — surfaced by the diagnostics readout. */
+export function trippedHosts(): string[] {
+  const now = Date.now();
+  return [...breaker.entries()].filter(([, s]) => s.openUntil > now).map(([h]) => h);
+}
+
 async function fetchWithTimeout(
   url: string,
   timeoutMs: number,
   headers?: Record<string, string>,
 ): Promise<Response | null> {
+  const host = hostOf(url);
+  if (isOpen(host)) return null;
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const res = await fetch(url, {
       signal: ctrl.signal,
       headers: IS_SERVER ? { ...BROWSER_HEADERS, ...headers } : headers,
       redirect: "follow",
     });
+    // 5xx and 429 are the host's problem and worth backing off from. A 404 is
+    // an answer — the host is alive and simply doesn't have that resource, so
+    // it must not count against it.
+    if (res.status >= 500 || res.status === 429) noteFailure(host);
+    else noteSuccess(host);
+    return res;
   } catch {
+    // DNS failure, connection refused, timeout — the host is not answering.
+    noteFailure(host);
     return null;
   } finally {
     clearTimeout(t);
@@ -71,12 +139,25 @@ function extractJson<T>(text: string): T | null {
   }
 }
 
+/**
+ * How many proxies are worth trying for this URL.
+ *
+ * A host that has been failing is usually failing for everyone — bad DNS, dead
+ * service — and relaying to it through five proxies just multiplies the wait.
+ * One proxy still gets tried, because the other explanation for a dead origin
+ * is that it blocks our IP or our CORS, and a proxy fixes exactly that.
+ */
+function proxyBudget(url: string, requested?: number): ProxyBuilder[] {
+  const capped = requested == null ? PROXIES : PROXIES.slice(0, Math.max(0, requested));
+  return isOpen(hostOf(url)) ? capped.slice(0, 1) : capped;
+}
+
 export async function proxiedFetchJson<T>(
   url: string,
   opts: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T | null> {
   const timeoutMs = opts.timeoutMs ?? 7_000;
-  const targets = [url, ...PROXIES.map((p) => p(url))];
+  const targets = [url, ...proxyBudget(url).map((p) => p(url))];
   for (const target of targets) {
     const res = await fetchWithTimeout(target, timeoutMs, opts.headers);
     if (!res || !res.ok) continue;
@@ -102,8 +183,7 @@ export async function proxiedFetchText(
   } = {},
 ): Promise<string | null> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const proxies = opts.hops == null ? PROXIES : PROXIES.slice(0, Math.max(0, opts.hops));
-  const targets = [url, ...proxies.map((p) => p(url))];
+  const targets = [url, ...proxyBudget(url, opts.hops).map((p) => p(url))];
   for (const target of targets) {
     const res = await fetchWithTimeout(target, timeoutMs, opts.headers);
     if (!res || !res.ok) continue;

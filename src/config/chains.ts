@@ -60,6 +60,12 @@ export interface ChainConfig {
   nativeCurrency: { name: string; symbol: string; decimals: number };
   /** Human label for the gas token (may differ from the native symbol). */
   gasToken: string;
+  /**
+   * Canonical assets for this chain, listed whether or not any indexer knows
+   * them. Metadata is read from the contracts themselves, so a chain no
+   * aggregator covers still shows real tokens instead of an empty terminal.
+   */
+  seedTokens?: `0x${string}`[];
   /** Wrapped-native token used as the swap intermediary, when known. */
   wrappedNative?: `0x${string}`;
   /** Canonical stablecoin on the chain, used as a quote asset when known. */
@@ -190,10 +196,21 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // Primary explorer is Etherscan-powered (StableScan). For the token/stat
     // feeds we use the Blockscout instance, which exposes a free /api/v2.
     explorerUrl: "https://stablescan.xyz",
-    explorer: {
-      kind: "blockscout",
-      apiBase: env("VITE_EXPLORER_API_STABLE") ?? "https://blockscout.stable.xyz/api/v2",
-    },
+    // NO default Blockscout base, on purpose. `blockscout.stable.xyz` was an
+    // assumption and it does not resolve — and an unresolvable host is the most
+    // expensive kind of source: every call walked the origin plus five proxies,
+    // each waiting out its own timeout, which is precisely why Stable's list
+    // painted so much later than Robinhood's. Leaving it unset means the
+    // Blockscout adapter returns immediately and the sources that DO work
+    // (GeckoTerminal, Etherscan V2 with the key, and the on-chain scans) carry
+    // the chain. Set VITE_EXPLORER_API_STABLE if a real instance appears.
+    explorer: { kind: "blockscout", apiBase: env("VITE_EXPLORER_API_STABLE") },
+    // Canonical assets, always listed even when no indexer covers the chain.
+    // Read straight off the contracts, so they arrive with real names, symbols
+    // and supply rather than as placeholders.
+    seedTokens: [
+      (env("VITE_USDT0_STABLE") ?? "0x779Ded0c9e1022225f8E0630b35a9b54bE713736") as `0x${string}`,
+    ],
     nativeCurrency: { name: "Tether USD", symbol: "USDT0", decimals: 18 },
     gasToken: "USDT0",
     // USDT0 as an ERC-20 (6 decimals) — verified on-chain (symbol/decimals) and
@@ -292,6 +309,15 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // EURC is Arc's other canonical stablecoin; quoting hops through it as well
     // catches pairs that don't trade directly against USDC.
     extraRoutingBases: [
+      (env("VITE_EURC_ARC") ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a") as `0x${string}`,
+    ],
+    // Arc's documented predeploys. No third-party aggregator indexes Arc — its
+    // mainnet chain (id 5042) produces blocks and has USDC deployed, but it is
+    // Circle's pre-release infrastructure and no public indexer covers it. The
+    // contracts answer regardless, so these are read on chain and the terminal
+    // shows real assets instead of nothing at all.
+    seedTokens: [
+      (env("VITE_USDC_ARC") ?? "0x3600000000000000000000000000000000000000") as `0x${string}`,
       (env("VITE_EURC_ARC") ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a") as `0x${string}`,
     ],
     // Value transfers to the zero address REVERT on Arc ("Zero address not

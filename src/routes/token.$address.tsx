@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { Header } from "@/components/terminal/Header";
+import { Footer } from "@/components/terminal/Footer";
 import { SwapPanel } from "@/components/terminal/SwapPanel";
 import { PriceChart } from "@/components/terminal/PriceChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
@@ -373,6 +374,8 @@ function TokenDetail() {
           </>
         )}
       </div>
+
+      <Footer />
     </div>
   );
 }

@@ -12,6 +12,8 @@ import { BrandImage } from "@/components/brand/BrandImage";
 import { WhaleIcon } from "@/components/brand/WhaleIcon";
 import { useChain } from "@/lib/chain-context";
 import { useWatchlist } from "@/lib/watchlist";
+import { useSpikes, spikeLabel } from "@/lib/spikes";
+import { trippedHosts } from "@/lib/net";
 import { QuickBuyModal } from "./QuickBuyModal";
 import { PortfolioPanel } from "./PortfolioPanel";
 import { TokenIcon } from "./TokenIcon";
@@ -173,11 +175,17 @@ function SourceReadout() {
   ];
   const dead = entries.filter(([, n]) => n === 0);
   if (!dead.length) return null;
+
+  // Hosts the breaker is currently skipping. Naming them turns "the list looks
+  // thin" into "that host is down and we stopped waiting on it".
+  const tripped = trippedHosts();
+  const detail =
+    entries.map(([k, n]) => `${k}: ${n}`).join(" · ") +
+    (c.note ? ` — ${c.note}` : "") +
+    (tripped.length ? ` — skipping unresponsive: ${tripped.join(", ")}` : "");
+
   return (
-    <span
-      className="chip !py-0 text-[9px] text-muted-foreground"
-      title={entries.map(([k, n]) => `${k}: ${n}`).join(" · ") + (c.note ? ` — ${c.note}` : "")}
-    >
+    <span className="chip !py-0 text-[9px] text-muted-foreground" title={detail}>
       {entries.length - dead.length}/{entries.length} sources
     </span>
   );
@@ -364,6 +372,16 @@ export function TokenTable({
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
   const isPortfolio = filter === "portfolio";
+
+  // Rows that moved sharply since the last refresh. Fed the whale counts too,
+  // so a cluster of five-figure holders arriving counts as a spike in its own
+  // right rather than waiting for the volume to catch up.
+  const whaleCounts = useMemo(() => {
+    const out: Record<string, number | undefined> = {};
+    for (const [addr, i] of Object.entries(insights ?? {})) out[addr] = i.whaleHolders;
+    return out;
+  }, [insights]);
+  const spikes = useSpikes(tokens, whaleCounts);
 
   // Reflect a search submitted from the header.
   useEffect(() => {
@@ -601,173 +619,186 @@ export function TokenTable({
                   </td>
                 </tr>
               )}
-              {rows.map((t, i) => (
-                <tr
-                  key={t.address}
-                  // Staggered arrival, capped in CSS so the tail of a long list
-                  // doesn't sit visibly waiting its turn.
-                  style={{ "--i": i } as React.CSSProperties}
-                  className="row-in group border-b border-border/60 transition-colors hover:bg-surface-elevated/60"
-                >
-                  {/* Frozen while the rest of the row scrolls sideways — without
+              {rows.map((t, i) => {
+                const spike = spikes[t.address.toLowerCase()];
+                return (
+                  <tr
+                    key={t.address}
+                    // Staggered arrival, capped in CSS so the tail of a long list
+                    // doesn't sit visibly waiting its turn.
+                    style={{ "--i": i } as React.CSSProperties}
+                    className={`row-in group border-b border-border/60 transition-colors hover:bg-surface-elevated/60 ${
+                      spike ? "spiking" : ""
+                    }`}
+                  >
+                    {/* Frozen while the rest of the row scrolls sideways — without
                     an anchor column the numbers stop meaning anything on a
                     phone. `bg-background` (and the elevated variant on hover)
                     keeps the scrolled columns from showing through. */}
-                  <td className="sticky left-0 z-10 w-[150px] bg-background px-3 py-2 group-hover:bg-surface-elevated sm:w-[168px]">
-                    <Link
-                      to="/token/$address"
-                      params={{ address: t.address }}
-                      className="flex items-center gap-2"
-                    >
-                      <TokenIcon url={t.logoUrl} symbol={t.symbol} size={26} />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-[13px] font-medium">{t.symbol}</span>
-                          {t.status.slice(0, 1).map((st) => (
-                            <StatusBadge key={st} s={st} />
-                          ))}
+                    <td className="sticky left-0 z-10 w-[150px] bg-background px-3 py-2 group-hover:bg-surface-elevated sm:w-[168px]">
+                      <Link
+                        to="/token/$address"
+                        params={{ address: t.address }}
+                        className="flex items-center gap-2"
+                      >
+                        <TokenIcon url={t.logoUrl} symbol={t.symbol} size={26} />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-[13px] font-medium">{t.symbol}</span>
+                            {/* What moved, so the shake isn't a mystery. It
+                              replaces the status badge for its few seconds —
+                              a row can't say two things at once in this width. */}
+                            {spike ? (
+                              <span className="spike-badge inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-hot/40 bg-hot/15 px-1 py-0.5 text-[9px] font-semibold tracking-wide text-hot">
+                                <Flame className="h-2.5 w-2.5" />
+                                {spikeLabel(spike)}
+                              </span>
+                            ) : (
+                              t.status.slice(0, 1).map((st) => <StatusBadge key={st} s={st} />)
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            <span className="num truncate">{shortAddr(t.address)}</span>
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                navigator.clipboard.writeText(t.address);
+                              }}
+                              title="Copy contract address"
+                              className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </button>
+                            <a
+                              href={`${chain.explorerUrl}/token/${t.address}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              title="View on explorer"
+                              className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                watchlist.toggle(t.address);
+                              }}
+                              title={
+                                watchlist.has(t.address)
+                                  ? "Remove from watchlist"
+                                  : "Add to watchlist"
+                              }
+                              className={`transition-opacity hover:text-foreground ${
+                                watchlist.has(t.address)
+                                  ? "text-primary opacity-100"
+                                  : "opacity-0 group-hover:opacity-100"
+                              }`}
+                            >
+                              <Star
+                                className={`h-3 w-3 ${watchlist.has(t.address) ? "fill-current" : ""}`}
+                              />
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                          <span className="num truncate">{shortAddr(t.address)}</span>
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              navigator.clipboard.writeText(t.address);
-                            }}
-                            title="Copy contract address"
-                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                          <a
-                            href={`${chain.explorerUrl}/token/${t.address}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            title="View on explorer"
-                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              watchlist.toggle(t.address);
-                            }}
-                            title={
-                              watchlist.has(t.address)
-                                ? "Remove from watchlist"
-                                : "Add to watchlist"
-                            }
-                            className={`transition-opacity hover:text-foreground ${
-                              watchlist.has(t.address)
-                                ? "text-primary opacity-100"
-                                : "opacity-0 group-hover:opacity-100"
-                            }`}
-                          >
-                            <Star
-                              className={`h-3 w-3 ${watchlist.has(t.address) ? "fill-current" : ""}`}
-                            />
-                          </button>
-                        </div>
+                      </Link>
+                    </td>
+                    <td className="num px-1.5 py-2 text-xs text-muted-foreground">
+                      {formatAge(t.ageMinutes)}
+                    </td>
+                    <td className="px-1.5 py-2 text-right">
+                      <div className="num text-xs leading-tight">
+                        {t.price > 0 ? formatUSD(t.price) : "—"}
                       </div>
-                    </Link>
-                  </td>
-                  <td className="num px-1.5 py-2 text-xs text-muted-foreground">
-                    {formatAge(t.ageMinutes)}
-                  </td>
-                  <td className="px-1.5 py-2 text-right">
-                    <div className="num text-xs leading-tight">
-                      {t.price > 0 ? formatUSD(t.price) : "—"}
-                    </div>
-                    <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
-                  </td>
-                  <td className="px-1.5 py-2 text-center">
-                    <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
-                  </td>
-                  {/* Market cap over 24h volume — one column, two figures. */}
-                  <td className="px-1.5 py-2 text-right">
-                    <div className="num text-xs leading-tight">{usdOrDash(t.mcap)}</div>
-                    <div className="num text-[11px] leading-tight text-muted-foreground">
-                      {usdOrDash(t.vol24h)}
-                    </div>
-                  </td>
-                  {/* Buys/sells over holders. */}
-                  <td className="px-1.5 py-2 text-right">
-                    <Txns24h buys={t.buys24h} sells={t.sells24h} />
-                    <div className="flex items-center justify-end gap-1.5 leading-tight">
-                      <span className="num text-[11px] text-muted-foreground">
-                        {t.holders > 0 ? formatNum(t.holders) : "—"}
-                      </span>
-                      <WhaleHolders count={insights?.[t.address]?.whaleHolders} />
-                    </div>
-                  </td>
-                  {/* Dev holding over top-10 concentration. */}
-                  <td className="px-1.5 py-2 text-right leading-tight">
-                    <div>
-                      <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
-                    </div>
-                    <div>
-                      <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
-                    </div>
-                  </td>
-                  {/* Bundle risk over DexScreener paid state. */}
-                  <td className="px-1.5 py-2 text-center leading-tight">
-                    <div>
-                      <BundleCell stats={bundles?.[t.address]} />
-                    </div>
-                    <div>
-                      <DexPaidCell
-                        paid={insights?.[t.address]?.dexPaid}
-                        unsupported={insights?.[t.address]?.dexUnsupported}
-                      />
-                    </div>
-                  </td>
-                  {/* Venue over social heat. */}
-                  <td className="px-1.5 py-2 leading-tight">
-                    <VenueCell t={t} />
-                    <div className="mt-0.5 flex items-center gap-1.5">
-                      <div className="h-1 w-10 overflow-hidden rounded-full bg-secondary">
-                        <div
-                          className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
-                          style={{ width: `${t.socialHeat}%` }}
+                      <Delta v={t.priceChange24h} known={t.priceSource === "geckoterminal"} />
+                    </td>
+                    <td className="px-1.5 py-2 text-center">
+                      <Sparkline points={t.sparkline} positive={t.priceChange24h >= 0} />
+                    </td>
+                    {/* Market cap over 24h volume — one column, two figures. */}
+                    <td className="px-1.5 py-2 text-right">
+                      <div className="num text-xs leading-tight">{usdOrDash(t.mcap)}</div>
+                      <div className="num text-[11px] leading-tight text-muted-foreground">
+                        {usdOrDash(t.vol24h)}
+                      </div>
+                    </td>
+                    {/* Buys/sells over holders. */}
+                    <td className="px-1.5 py-2 text-right">
+                      <Txns24h buys={t.buys24h} sells={t.sells24h} />
+                      <div className="flex items-center justify-end gap-1.5 leading-tight">
+                        <span className="num text-[11px] text-muted-foreground">
+                          {t.holders > 0 ? formatNum(t.holders) : "—"}
+                        </span>
+                        <WhaleHolders count={insights?.[t.address]?.whaleHolders} />
+                      </div>
+                    </td>
+                    {/* Dev holding over top-10 concentration. */}
+                    <td className="px-1.5 py-2 text-right leading-tight">
+                      <div>
+                        <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
+                      </div>
+                      <div>
+                        <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
+                      </div>
+                    </td>
+                    {/* Bundle risk over DexScreener paid state. */}
+                    <td className="px-1.5 py-2 text-center leading-tight">
+                      <div>
+                        <BundleCell stats={bundles?.[t.address]} />
+                      </div>
+                      <div>
+                        <DexPaidCell
+                          paid={insights?.[t.address]?.dexPaid}
+                          unsupported={insights?.[t.address]?.dexUnsupported}
                         />
                       </div>
-                      <span className="num text-[10px] text-muted-foreground">
-                        {t.socialHeat > 0 ? t.socialHeat : "—"}
-                      </span>
-                    </div>
-                  </td>
-                  {/* Actions side by side so the row stays one line tall. */}
-                  <td className="px-3 py-2">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={() => {
-                          // Just open the dialog. Firing a speculative connect()
-                          // here raced the dialog's own click: the wallet prompt
-                          // opened behind the modal and the second request was
-                          // swallowed as a duplicate.
-                          setBuyToken(t);
-                        }}
-                        className="tap inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-                      >
-                        <Zap className="h-3 w-3" /> Buy
-                      </button>
-                      <a
-                        href={baseBotUrl(t.address)}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        title={`Buy ${t.symbol} on BasedBot`}
-                        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-                      >
-                        <Send className="h-3 w-3" /> Buy on BasedBot
-                      </a>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    {/* Venue over social heat. */}
+                    <td className="px-1.5 py-2 leading-tight">
+                      <VenueCell t={t} />
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <div className="h-1 w-10 overflow-hidden rounded-full bg-secondary">
+                          <div
+                            className={`h-full bg-hot transition-all duration-700 ${t.socialHeat > 40 ? "intel-glow" : ""}`}
+                            style={{ width: `${t.socialHeat}%` }}
+                          />
+                        </div>
+                        <span className="num text-[10px] text-muted-foreground">
+                          {t.socialHeat > 0 ? t.socialHeat : "—"}
+                        </span>
+                      </div>
+                    </td>
+                    {/* Actions side by side so the row stays one line tall. */}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => {
+                            // Just open the dialog. Firing a speculative connect()
+                            // here raced the dialog's own click: the wallet prompt
+                            // opened behind the modal and the second request was
+                            // swallowed as a duplicate.
+                            setBuyToken(t);
+                          }}
+                          className="tap inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                        >
+                          <Zap className="h-3 w-3" /> Buy
+                        </button>
+                        <a
+                          href={baseBotUrl(t.address)}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Buy ${t.symbol} on BasedBot`}
+                          className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                        >
+                          <Send className="h-3 w-3" /> Buy on BasedBot
+                        </a>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

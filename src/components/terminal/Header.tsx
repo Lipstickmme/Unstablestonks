@@ -72,24 +72,30 @@ export function Header() {
               Both move to the mobile tab bar below the `sm` breakpoint — a
               phone header with five controls in it is the thing that stops a
               web app feeling like an app. */}
+            {/* Square, and framed like a picture rather than an avatar: an outer
+                metallic rail, a dark mount inside it, then the art. Two visible
+                outlines is what reads as a frame — one alone just reads as a
+                border. */}
             <button
               onClick={() => setWhitelistOpen(true)}
               title="NFT whitelist — complete the tasks to claim a spot"
               aria-label="NFT whitelist"
-              className="tap relative hidden rounded-full p-[1.5px] transition-transform hover:scale-105 sm:block"
+              className="tap relative hidden rounded-[7px] p-[2px] transition-transform hover:scale-105 sm:block"
               style={{
                 background:
                   "linear-gradient(135deg,#e5e7eb 0%,#6b7280 30%,#1c1d21 55%,#9aa2ad 80%,#e5e7eb 100%)",
               }}
             >
-              <img
-                src="/unstablestonks012.png"
-                alt=""
-                width={28}
-                height={28}
-                className="h-7 w-7 rounded-full object-cover"
-              />
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+              <span className="block rounded-[5px] bg-background p-[2px]">
+                <img
+                  src="/unstablestonks012.png"
+                  alt=""
+                  width={26}
+                  height={26}
+                  className="block h-[26px] w-[26px] rounded-[3px] object-cover"
+                />
+              </span>
+              <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
             </button>
             <button
               onClick={() => setBridgeOpen(true)}

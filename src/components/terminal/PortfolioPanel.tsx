@@ -7,13 +7,19 @@ import {
   ExternalLink,
   Layers,
   Loader2,
+  PieChart,
   TrendingDown,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 import { formatCompactToken, formatUSD, shortAddr } from "@/lib/format";
 import type { TokenRow, TradeEvent } from "@/lib/types";
-import { useWalletActivity, useWalletPortfolio, type PortfolioPosition } from "@/lib/data/hooks";
+import {
+  useWalletActivity,
+  useWalletPortfolio,
+  type Portfolio,
+  type PortfolioPosition,
+} from "@/lib/data/hooks";
 import { profileTraders } from "@/lib/traders";
 import { useChain } from "@/lib/chain-context";
 import { useWallet } from "@/lib/wallet";
@@ -75,6 +81,114 @@ function Tile({
         {value}
       </div>
       {sub && <div className="mt-1 text-[10px] text-muted-foreground">{sub}</div>}
+    </div>
+  );
+}
+
+/**
+ * Where the money is, and how each slice is doing.
+ *
+ * A donut plus a ranked bar list, because they answer different questions: the
+ * ring shows concentration at a glance (one dominant arc is a very different
+ * portfolio from eight even ones), and the bars carry the names, weights and
+ * 24h moves the ring can't.
+ *
+ * Colours come from the design tokens rather than a rainbow: this is a terminal,
+ * and hue already means something here (green up, red down), so allocation uses
+ * a single hue stepped by opacity and lets the delta text carry direction.
+ */
+function AllocationChart({ portfolio }: { portfolio: Portfolio }) {
+  const slices = useMemo(() => {
+    const parts: { key: string; label: string; usd: number; change?: number }[] = [];
+    if (portfolio.native.valueUsd && portfolio.native.valueUsd > 0) {
+      parts.push({
+        key: "native",
+        label: portfolio.native.symbol,
+        usd: portfolio.native.valueUsd,
+      });
+    }
+    for (const pos of portfolio.positions) {
+      if (pos.valueUsd <= 0) continue;
+      parts.push({
+        key: pos.token.address,
+        label: pos.token.symbol,
+        usd: pos.valueUsd,
+        change: pos.token.priceChange24h,
+      });
+    }
+    parts.sort((a, b) => b.usd - a.usd);
+
+    // Everything past the sixth is one "rest" slice — beyond that the arcs are
+    // too thin to read and the legend stops being a legend.
+    const head = parts.slice(0, 6);
+    const tail = parts.slice(6);
+    if (tail.length) {
+      head.push({
+        key: "rest",
+        label: `${tail.length} more`,
+        usd: tail.reduce((s, x) => s + x.usd, 0),
+      });
+    }
+    const total = head.reduce((s, x) => s + x.usd, 0) || 1;
+    return head.map((x, i) => ({ ...x, pct: (x.usd / total) * 100, i }));
+  }, [portfolio]);
+
+  if (slices.length < 2) return null;
+
+  // Donut geometry: one circle, dash offsets walked round it. Cheaper and
+  // sharper than arc paths, and it animates for free via stroke-dasharray.
+  const R = 42;
+  const C = 2 * Math.PI * R;
+  let walked = 0;
+
+  return (
+    <div className="rounded-xl border border-border bg-surface p-3 sm:p-4">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <PieChart className="h-3 w-3" />
+        Allocation
+      </div>
+
+      <div className="mt-3 flex flex-col items-center gap-4 sm:flex-row sm:items-center sm:gap-6">
+        <svg viewBox="0 0 100 100" className="h-32 w-32 flex-shrink-0 -rotate-90">
+          <circle cx="50" cy="50" r={R} fill="none" stroke="var(--border)" strokeWidth="11" />
+          {slices.map((s) => {
+            const len = (s.pct / 100) * C;
+            const offset = -walked;
+            walked += len;
+            return (
+              <circle
+                key={s.key}
+                cx="50"
+                cy="50"
+                r={R}
+                fill="none"
+                stroke="var(--primary)"
+                strokeOpacity={Math.max(0.22, 1 - s.i * 0.14)}
+                strokeWidth="11"
+                strokeDasharray={`${len} ${C - len}`}
+                strokeDashoffset={offset}
+                className="donut-draw"
+                style={{ animationDelay: `${s.i * 70}ms` }}
+              />
+            );
+          })}
+        </svg>
+
+        <ul className="w-full space-y-1.5">
+          {slices.map((s) => (
+            <li key={s.key} className="flex items-center gap-2 text-xs">
+              <span
+                className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-primary"
+                style={{ opacity: Math.max(0.22, 1 - s.i * 0.14) }}
+              />
+              <span className="min-w-0 flex-1 truncate font-medium">{s.label}</span>
+              {s.change != null && <Delta pct={s.change} />}
+              <span className="num w-12 text-right text-muted-foreground">{s.pct.toFixed(0)}%</span>
+              <span className="num w-16 text-right">{formatUSD(s.usd)}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -239,6 +353,9 @@ export function PortfolioPanel({
           }
         />
       </div>
+
+      {/* ── Allocation ──────────────────────────────────────────────────── */}
+      {p && p.totalUsd > 0 && <AllocationChart portfolio={p} />}
 
       {/* Best and worst, when there is more than one priced position to rank. */}
       {p?.best && p.worst && p.best.token.address !== p.worst.token.address && (

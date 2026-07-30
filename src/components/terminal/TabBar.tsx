@@ -47,14 +47,23 @@ export function TabBar({ onBridge, onQuest }: { onBridge: () => void; onQuest: (
         <TabButton
           onClick={onQuest}
           icon={
-            <span className="relative block">
-              <img
-                src="/unstablestonks012.png"
-                alt=""
-                width={20}
-                height={20}
-                className="h-5 w-5 rounded-full object-cover"
-              />
+            // Same framed-picture treatment as the header, scaled down.
+            <span
+              className="relative block rounded-[5px] p-[1.5px]"
+              style={{
+                background:
+                  "linear-gradient(135deg,#e5e7eb 0%,#6b7280 30%,#1c1d21 55%,#9aa2ad 80%,#e5e7eb 100%)",
+              }}
+            >
+              <span className="block rounded-[3.5px] bg-background p-[1.5px]">
+                <img
+                  src="/unstablestonks012.png"
+                  alt=""
+                  width={17}
+                  height={17}
+                  className="block h-[17px] w-[17px] rounded-[2px] object-cover"
+                />
+              </span>
               <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
             </span>
           }

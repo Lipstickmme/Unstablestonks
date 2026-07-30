@@ -20,6 +20,7 @@ import {
 } from "./dexscreener";
 import { fetchNewLaunches } from "./discovery";
 import { fetchExplorerTokens } from "./explorer-tokens";
+import { fetchSeedTokens } from "./seed-tokens";
 import {
   fetchNetworkPools,
   fetchOhlcvCandles,
@@ -312,10 +313,14 @@ export function useTokens() {
     refetchInterval: DIRECTORY_REFRESH,
     staleTime: DIRECTORY_REFRESH,
     queryFn: async () => {
-      const [dsRows, bsRows, explorerScan] = await Promise.all([
+      const [dsRows, bsRows, explorerScan, seedRows] = await Promise.all([
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
         fetchExplorerTokens(chain).catch(() => ({ rows: [] as TokenRow[], note: "threw" })),
+        // The chain's own canonical assets. Costs a handful of contract reads,
+        // cached for the session, and it is the only source that cannot go dark
+        // — which is what keeps Arc from showing an empty terminal.
+        fetchSeedTokens(chainKey, chain).catch(() => [] as TokenRow[]),
       ]);
 
       // The live pools tell the scanner which DEX factories this chain actually
@@ -328,7 +333,9 @@ export function useTokens() {
         () => [] as TokenRow[],
       );
 
-      const rows = [...dsRows, ...bsRows, ...explorerScan.rows, ...freshRows];
+      // Seeds go last: they carry no market data, so anything a real source
+      // knows about the same address must win.
+      const rows = [...dsRows, ...bsRows, ...explorerScan.rows, ...freshRows, ...seedRows];
 
       // Price anything the directory found that no market source covers. One
       // call covers 30 addresses, so this stays cheap even on a full list.
@@ -342,7 +349,7 @@ export function useTokens() {
         dexscreener: dsRows.length,
         blockscout: bsRows.length,
         explorer: explorerScan.rows.length,
-        onchain: freshRows.length,
+        onchain: freshRows.length + seedRows.length,
         note: explorerScan.note,
       });
 

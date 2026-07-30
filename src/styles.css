@@ -369,6 +369,101 @@
   );
 }
 
+/* Donut arcs sweeping in on first paint. */
+@keyframes donut-draw {
+  from {
+    opacity: 0;
+    stroke-width: 4;
+  }
+  to {
+    opacity: 1;
+    stroke-width: 11;
+  }
+}
+.donut-draw {
+  animation: donut-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Attention: something just moved ─────────────────────────────────────────
+   A row that spikes shakes once and glows for a few seconds. The shake is small
+   and short on purpose — enough to catch the eye in peripheral vision, not
+   enough to make the number unreadable while it happens. It runs three times
+   with a gap, so the row is still noticeable to someone who looked away for the
+   first pass. */
+
+@keyframes attention-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  12% {
+    transform: translateX(-3px);
+  }
+  24% {
+    transform: translateX(3px);
+  }
+  36% {
+    transform: translateX(-2px);
+  }
+  48% {
+    transform: translateX(2px);
+  }
+  60% {
+    transform: translateX(-1px);
+  }
+  /* The tail of each cycle is deliberately still, so the row reads as
+     "buzzing periodically" rather than vibrating continuously. */
+  72%,
+  99% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes attention-glow {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  20%,
+  60% {
+    background-color: color-mix(in oklab, var(--hot) 12%, transparent);
+  }
+}
+
+.spiking {
+  animation:
+    attention-shake 1.1s ease-in-out 3,
+    attention-glow 4s ease-in-out 3;
+  will-change: transform;
+}
+
+/* The badge that says WHAT moved, so the shake isn't a mystery. */
+@keyframes spike-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.spike-badge {
+  animation: spike-badge-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Reduced motion removes the shake, NOT the signal: the glow stays so the
+     information is still delivered, just without movement. */
+  .spiking {
+    animation: attention-glow 4s ease-in-out 2;
+  }
+  .spike-badge,
+  .donut-draw {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fade-up,
   .intel-glow,
