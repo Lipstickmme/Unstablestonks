@@ -1,5 +1,5 @@
-import { useMemo, useSyncExternalStore } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState, useSyncExternalStore } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useChain } from "@/lib/chain-context";
 import { getIntermediary, type ChainConfig, type ChainKey } from "@/config/chains";
 import type { ChainStats, TokenRow, TradeEvent } from "../types";
@@ -213,8 +213,35 @@ function foldRow(into: TokenRow, extra: TokenRow): void {
  *
  * The guard is on the content, not the caller: the same rows publish once.
  */
-const published = new Map<ChainKey, { sig: string; ts: number }>();
+const published = new Map<ChainKey, { sig: string; count: number; ts: number }>();
 const PUBLISH_MIN_GAP = 30_000;
+
+/**
+ * The last full list this session produced, per chain.
+ *
+ * A floor under the merge. Sources drop out constantly — a rate limit, a proxy
+ * timeout, a host the breaker is skipping — and when one does, the rows only it
+ * knew about disappeared from the table. That is what made the list "go blank,
+ * or show only newer tokens" a few seconds after loading: the on-chain
+ * new-launch scan kept answering while the indexers that knew the older tokens
+ * did not, so the list collapsed to whatever had launched recently.
+ *
+ * Folding this in last means a row survives a source blinking out, while live
+ * data still wins every field it carries (see foldRow). Entries age out so a
+ * long-lived tab doesn't accumulate tokens that genuinely stopped trading.
+ */
+const lastGood = new Map<ChainKey, { rows: TokenRow[]; ts: number }>();
+const LAST_GOOD_TTL = 20 * 60_000;
+
+function readLastGood(chainKey: ChainKey): TokenRow[] {
+  const hit = lastGood.get(chainKey);
+  if (!hit) return [];
+  if (Date.now() - hit.ts > LAST_GOOD_TTL) {
+    lastGood.delete(chainKey);
+    return [];
+  }
+  return hit.rows;
+}
 
 function publishTokens(
   chainKey: ChainKey,
@@ -226,8 +253,16 @@ function publishTokens(
   const sig = `${rows.length}:${rows[0]?.address ?? ""}:${rows[0]?.vol24h ?? 0}`;
   const last = published.get(chainKey);
   if (last && last.sig === sig && Date.now() - last.ts < PUBLISH_MIN_GAP) return;
-  published.set(chainKey, { sig, ts: Date.now() });
 
+  // Never let a degraded pass overwrite a good one. A tick where half the
+  // sources were rate-limited produces a genuinely shorter list, and writing
+  // that to the cache meant the NEXT cold load started from the damaged copy —
+  // the failure outlived the outage that caused it. A big drop is treated as an
+  // outage and simply not published; a modest one is normal churn.
+  const shrunk = last != null && rows.length < last.count * 0.6;
+  if (shrunk && Date.now() - last.ts < LAST_GOOD_TTL) return;
+
+  published.set(chainKey, { sig, count: rows.length, ts: Date.now() });
   writeCache(cacheKey, rows);
 
   // Publish for the next cold visitor — but only when the live sources actually
@@ -258,7 +293,22 @@ export function useTokens() {
     queryKey: ["tokens-market", chainKey],
     refetchInterval: REFRESH,
     staleTime: REFRESH / 2,
-    queryFn: () => fetchNetworkPools(chain).catch(() => [] as TokenRow[]),
+    // One retry, not the default three. This lane fails mostly because of rate
+    // limiting, and retrying hard against a rate limit is how a brief 429 turns
+    // into a sustained one.
+    retry: 1,
+    queryFn: async () => {
+      const rows = await fetchNetworkPools(chain).catch(() => null);
+      // THROW, don't return []. `.catch(() => [])` looked defensive but it was
+      // the opposite: React Query stores an empty array as a SUCCESSFUL result
+      // and replaces the previous data with it. So one rate-limited refresh —
+      // routine on Stable, where this feed shares GeckoTerminal's 30/min budget
+      // with the trade feed and the social crawl — silently emptied the list
+      // thirty seconds after the page painted. Throwing keeps the last good
+      // data and just flags the error.
+      if (rows === null) throw new Error("market feed unavailable");
+      return rows;
+    },
   });
 
   // Shared snapshot of the last good list. A visitor with no localStorage —
@@ -266,9 +316,20 @@ export function useTokens() {
   // instead of watching the indexers resolve, and logos arrive attached to the
   // row rather than after an enrichment pass. Resolves to null when no store is
   // configured, in which case nothing below changes.
+  //
+  // `enabled` is decided ONCE per chain, at mount. Reading localStorage inline
+  // meant the flag flipped to false the moment the first merge wrote the cache
+  // — usually a second or two in, while this request was still in flight — so
+  // the snapshot was abandoned just before it could contribute and the older
+  // tokens it carried never appeared at all.
+  const [coldStart] = useState<Record<string, boolean>>(() => ({}));
+  if (coldStart[chainKey] === undefined) {
+    coldStart[chainKey] = !readCache<TokenRow[]>(cacheKey)?.length;
+  }
+
   const snapshotQ = useQuery<TokenRow[] | null>({
     queryKey: ["tokens-snapshot", chainKey],
-    enabled: !readCache<TokenRow[]>(cacheKey)?.length,
+    enabled: coldStart[chainKey],
     staleTime: 5 * 60_000,
     refetchInterval: false,
     retry: 0,
@@ -312,6 +373,7 @@ export function useTokens() {
     queryKey: ["tokens-directory", chainKey],
     refetchInterval: DIRECTORY_REFRESH,
     staleTime: DIRECTORY_REFRESH,
+    retry: 1,
     queryFn: async () => {
       const [dsRows, bsRows, explorerScan, seedRows] = await Promise.all([
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
@@ -353,7 +415,13 @@ export function useTokens() {
         note: explorerScan.note,
       });
 
-      return [...rows, ...priced];
+      // Same reasoning as the market lane: every source here catches its own
+      // failure, so a total outage produced an empty array that React Query
+      // stored as success and painted as "this chain has no tokens". If nothing
+      // answered at all, that is an error, not an answer.
+      const all = [...rows, ...priced];
+      if (all.length === 0) throw new Error("no directory source answered");
+      return all;
     },
   });
 
@@ -366,9 +434,10 @@ export function useTokens() {
 
     const merged = new Map<string, TokenRow>();
     // Order matters: the first source to introduce an address owns its market
-    // figures, later ones only fill blanks. Live data leads; the snapshot is
-    // last, so it can only fill gaps and never overwrite a fresh figure.
-    for (const group of [market, directory, snapshot]) {
+    // figures, later ones only fill blanks. Live data leads; the snapshot and
+    // this session's last good list come last, so they can only fill gaps and
+    // never overwrite a fresh figure.
+    for (const group of [market, directory, snapshot, readLastGood(chainKey)]) {
       for (const row of group) {
         const cur = merged.get(row.address);
         if (cur) foldRow(cur, row);
@@ -400,6 +469,12 @@ export function useTokens() {
     });
 
     if (rows.length) {
+      // Only a pass that a LIVE source contributed to becomes the floor.
+      // Without that check the floor would keep refreshing its own timestamp
+      // off itself and never expire.
+      if (market.length || directory.length) {
+        lastGood.set(chainKey, { rows, ts: Date.now() });
+      }
       publishTokens(chainKey, cacheKey, rows, market.length > 0, freshLogos);
       return {
         data: rows,
@@ -477,6 +552,13 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   const key = targets.join(",");
   return useQuery<Record<string, RowEnrichment>>({
     queryKey: ["row-enrichment", chainKey, key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: targets.length > 0,
     staleTime: ENRICH_REFRESH,
     refetchInterval: ENRICH_REFRESH,
@@ -666,6 +748,13 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
 
   return useQuery<Record<string, TokenInsight>>({
     queryKey: ["token-insights", chainKey, key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: targets.length > 0,
     staleTime: 300_000,
     refetchInterval: 300_000,
@@ -702,6 +791,13 @@ export function useTraderHoldings(
 
   return useQuery<Record<string, number>>({
     queryKey: ["trader-holdings", chainKey, token ?? "", key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: Boolean(token) && totalSupply > 0 && targets.length > 0,
     staleTime: 120_000,
     refetchInterval: 120_000,
@@ -755,6 +851,13 @@ export function useTraderBalances(wallets: string[], trades: TradeEvent[]) {
 
   return useQuery<Record<string, number>>({
     queryKey: ["trader-balances", chainKey, key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: targets.length > 0,
     staleTime: 120_000,
     refetchInterval: 120_000,
@@ -821,6 +924,13 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
   const key = top.map((t) => t.address).join(",");
   return useQuery<TradeEvent[]>({
     queryKey: ["chain-trades", chainKey, key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: top.length > 0,
     refetchInterval: TRADES_REFRESH,
     staleTime: TRADES_REFRESH / 2,
@@ -839,7 +949,13 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
           return trades.map((x) => ({ ...x, tokenAddress: t.address }));
         }),
       );
-      return perToken.flat().sort((a, b) => b.ms - a.ms);
+      const all = perToken.flat().sort((a, b) => b.ms - a.ms);
+      // Nothing at all across every pool means the feed didn't answer, not that
+      // eight busy pools all went quiet at once. Returning [] here stored an
+      // empty array as success and emptied whale watch and bundle watch; a throw
+      // keeps whatever they were showing.
+      if (all.length === 0) throw new Error("trade feed unavailable");
+      return all;
     },
   });
 }
@@ -921,6 +1037,13 @@ export function useWalletPortfolio(
 
   return useQuery<Portfolio>({
     queryKey: ["portfolio", chainKey, wallet ?? "", key],
+    // Keep the previous result while a new key resolves. Every one of these
+    // queries is keyed on a list DERIVED from the token table — the top eight by
+    // volume, the twelve busiest rows — and that list reorders on almost every
+    // refresh. A new key means a new cache entry, which starts empty, so the
+    // panel blanked for a moment on each reorder and then filled back in. This
+    // is exactly what placeholderData is for.
+    placeholderData: keepPreviousData,
     enabled: enabled && Boolean(wallet) && targets.length > 0,
     staleTime: 60_000,
     refetchInterval: 60_000,
