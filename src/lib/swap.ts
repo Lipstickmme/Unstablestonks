@@ -130,13 +130,47 @@ const QUOTER_V2_ABI = [
   },
 ] as const;
 
+/**
+ * The ORIGINAL Uniswap Quoter, whose quoteExactInputSingle takes flat arguments
+ * instead of QuoterV2's struct. Tried when the V2 shape reverts: a deployment
+ * that shipped the V1 quoter answered nothing at all under the V2 ABI, and the
+ * UI reported that as "no pool with liquidity" — the one explanation that sends
+ * you looking in completely the wrong place.
+ */
+const QUOTER_V1_ABI = [
+  {
+    type: "function",
+    name: "quoteExactInputSingle",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "fee", type: "uint24" },
+      { name: "amountIn", type: "uint256" },
+      { name: "sqrtPriceLimitX96", type: "uint160" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "quoteExactInput",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "path", type: "bytes" },
+      { name: "amountIn", type: "uint256" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+] as const;
+
 const V3_ROUTER_ABI = [
   {
     // SwapRouter02 dropped `deadline` from the swap structs and exposes it here
     // instead. Without it a swap has NO expiry: a transaction stuck in the
     // mempool can be mined minutes later, at a price nobody agreed to, and the
     // only protection left is amountOutMinimum from a quote that is by then
-    // stale. Every V3 swap goes through this.
+    // stale. Used when the router actually has it — see probeRouter. Wrapping
+    // unconditionally broke every swap on a router without the extension.
     type: "function",
     name: "multicall",
     stateMutability: "payable",
@@ -290,6 +324,101 @@ export function swapEnabled(cfg: ChainConfig): boolean {
   return Boolean(cfg.router && getIntermediary(cfg));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Router capability probe.
+//
+// The router and quoter addresses in chains.ts are the best available answer for
+// three networks that launched in the last few months, and "best available" is
+// not "verified on chain". Three things can be true of any of them and each one
+// fails in a way that used to be reported as "no liquidity", which sends you
+// hunting for a pool when the real problem is an address or an ABI:
+//
+//   · nothing is deployed there at all;
+//   · it's a Uniswap V3 deployment, but the ORIGINAL SwapRouter/Quoter rather
+//     than SwapRouter02/QuoterV2 — different function signatures entirely;
+//   · it's SwapRouter02 but without the multicall extension.
+//
+// So the code asks the chain instead of assuming. Probed once per chain, cached
+// for the session, and every failure downstream can now name what's actually
+// wrong.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RouterProbe {
+  routerDeployed: boolean;
+  quoterDeployed: boolean;
+  /** SwapRouter02's multicall(deadline, bytes[]) — needed for a deadline. */
+  supportsMulticall: boolean;
+  /** Set once a quoter shape is known to work, so we stop trying the other. */
+  quoterKind?: "v2" | "v1";
+}
+
+const probes = new Map<ChainKey, RouterProbe>();
+
+async function probeRouter(chainKey: ChainKey): Promise<RouterProbe> {
+  const hit = probes.get(chainKey);
+  if (hit) return hit;
+
+  const cfg = CHAINS[chainKey];
+  const client = getPublicClient(chainKey);
+  const probe: RouterProbe = {
+    routerDeployed: false,
+    quoterDeployed: false,
+    supportsMulticall: false,
+  };
+
+  try {
+    const [routerCode, quoterCode] = await Promise.all([
+      cfg.router ? client.getCode({ address: cfg.router.address }) : Promise.resolve(undefined),
+      cfg.router?.quoter
+        ? client.getCode({ address: cfg.router.quoter })
+        : Promise.resolve(undefined),
+    ]);
+    probe.routerDeployed = Boolean(routerCode && routerCode !== "0x");
+    probe.quoterDeployed = Boolean(quoterCode && quoterCode !== "0x");
+
+    // A multicall with an empty batch is a no-op on SwapRouter02 and an
+    // unknown-selector revert on anything that lacks the extension. Cheap, and
+    // it can't move funds either way.
+    if (probe.routerDeployed && cfg.router?.kind === "uniswapV3") {
+      try {
+        await client.simulateContract({
+          address: cfg.router.address,
+          abi: V3_ROUTER_ABI,
+          functionName: "multicall",
+          args: [BigInt(Math.floor(Date.now() / 1000) + 600), []],
+        });
+        probe.supportsMulticall = true;
+      } catch {
+        probe.supportsMulticall = false;
+      }
+    }
+  } catch {
+    /* RPC unreachable — leave everything false and let the caller report it */
+  }
+
+  probes.set(chainKey, probe);
+  return probe;
+}
+
+/** Why swapping can't work on this chain right now, or null when it can. */
+export async function swapDiagnostic(chainKey: ChainKey): Promise<string | null> {
+  const cfg = CHAINS[chainKey];
+  if (!cfg.router) {
+    return `No DEX router is configured for ${cfg.name}. Set VITE_ROUTER_${cfg.key.toUpperCase()}.`;
+  }
+  if (!getIntermediary(cfg)) {
+    return `No routing asset is configured for ${cfg.name}. Set VITE_WNATIVE_${cfg.key.toUpperCase()} or an intermediary.`;
+  }
+  const probe = await probeRouter(chainKey);
+  if (!probe.routerDeployed) {
+    return `Nothing is deployed at the configured router on ${cfg.name} (${cfg.router.address}). The address is wrong or the chain doesn't have this DEX — set VITE_ROUTER_${cfg.key.toUpperCase()}.`;
+  }
+  if (cfg.router.kind === "uniswapV3" && !probe.quoterDeployed) {
+    return `Nothing is deployed at the configured quoter on ${cfg.name} (${cfg.router.quoter ?? "unset"}). Set VITE_QUOTER_${cfg.key.toUpperCase()}.`;
+  }
+  return null;
+}
+
 export function feePreview(amountIn: number): number {
   return (amountIn * PLATFORM_FEE_BPS) / 10_000;
 }
@@ -359,9 +488,16 @@ export async function quoteSwap(
       const preferred = routerCfg.feeTier ?? 3000;
       const tiers = [preferred, 10000, 3000, 500, 100].filter((t, i, a) => a.indexOf(t) === i);
 
-      // Direct pair across every tier — the common case, and the cheapest.
-      for (const fee of tiers) {
-        try {
+      const probe = await probeRouter(chainKey);
+
+      /**
+       * One single-hop quote, under whichever quoter ABI this chain actually
+       * has. QuoterV2 takes a struct and returns four values; the original
+       * Quoter takes flat arguments and returns one. The working shape is
+       * remembered so the wrong one is tried at most once per session.
+       */
+      const quoteSingle = async (fee: number): Promise<bigint> => {
+        const tryV2 = async () => {
           const sim = await client.simulateContract({
             address: quoter,
             abi: QUOTER_V2_ABI,
@@ -376,13 +512,32 @@ export async function quoteSwap(
               },
             ],
           });
-          const out = (sim.result as readonly [bigint, bigint, number, bigint])[0];
-          if (out > outWei) {
-            outWei = out;
-            best = { tokens: [path[0], path[1]], fees: [fee] };
-          }
-        } catch {
-          /* no pool at this tier — try the next */
+          probe.quoterKind = "v2";
+          return (sim.result as readonly [bigint, bigint, number, bigint])[0];
+        };
+        const tryV1 = async () => {
+          const sim = await client.simulateContract({
+            address: quoter,
+            abi: QUOTER_V1_ABI,
+            functionName: "quoteExactInputSingle",
+            args: [path[0], path[1], fee, amountInWei, 0n],
+          });
+          probe.quoterKind = "v1";
+          return sim.result as bigint;
+        };
+
+        if (probe.quoterKind === "v1") return tryV1().catch(() => 0n);
+        if (probe.quoterKind === "v2") return tryV2().catch(() => 0n);
+        // Shape unknown: V2 first (much the more common deployment), V1 second.
+        return tryV2().catch(() => tryV1().catch(() => 0n));
+      };
+
+      // Direct pair across every tier — the common case, and the cheapest.
+      for (const fee of tiers) {
+        const out = await quoteSingle(fee);
+        if (out > outWei) {
+          outWei = out;
+          best = { tokens: [path[0], path[1]], fees: [fee] };
         }
       }
 
@@ -393,21 +548,23 @@ export async function quoteSwap(
         for (const hop of routes.slice(1)) {
           for (const f1 of baseTiers) {
             for (const f2 of tiers) {
-              try {
-                const encoded = encodePath(hop, [f1, f2]);
-                const sim = await client.simulateContract({
+              const encoded = encodePath(hop, [f1, f2]);
+              const out = await client
+                .simulateContract({
                   address: quoter,
-                  abi: QUOTER_V2_ABI,
+                  abi: probe.quoterKind === "v1" ? QUOTER_V1_ABI : QUOTER_V2_ABI,
                   functionName: "quoteExactInput",
                   args: [encoded, amountInWei],
-                });
-                const out = (sim.result as readonly [bigint, bigint[], number[], bigint])[0];
-                if (out > outWei) {
-                  outWei = out;
-                  best = { tokens: hop, fees: [f1, f2] };
-                }
-              } catch {
-                /* no route at this tier pair */
+                })
+                .then((sim) =>
+                  probe.quoterKind === "v1"
+                    ? (sim.result as bigint)
+                    : (sim.result as readonly [bigint, bigint[], number[], bigint])[0],
+                )
+                .catch(() => 0n);
+              if (out > outWei) {
+                outWei = out;
+                best = { tokens: hop, fees: [f1, f2] };
               }
             }
           }
@@ -415,6 +572,32 @@ export async function quoteSwap(
       }
 
       if (outWei === 0n) {
+        // "No liquidity" is only the right answer when the quoter actually
+        // answered. If nothing is deployed at these addresses, or no quoter ABI
+        // matched, then we never asked about liquidity at all — and reporting it
+        // that way is what sent everyone hunting for a pool that was never the
+        // problem.
+        const infra = await swapDiagnostic(chainKey);
+        if (infra) {
+          return {
+            ok: false,
+            reason: infra,
+            amountOut: 0,
+            minOut: 0,
+            feeAmount,
+            routerReady: false,
+          };
+        }
+        if (!probe.quoterKind) {
+          return {
+            ok: false,
+            reason: `The quoter at ${quoter} on ${cfg.name} didn't respond to either the QuoterV2 or the original Quoter interface. The address is probably not a Uniswap quoter — set VITE_QUOTER_${cfg.key.toUpperCase()}.`,
+            amountOut: 0,
+            minOut: 0,
+            feeAmount,
+            routerReady: false,
+          };
+        }
         return {
           ok: false,
           reason: `No V3 pool with liquidity for this pair on ${cfg.name} — direct or via ${
@@ -639,45 +822,103 @@ export async function executeSwap(params: {
           ],
         });
 
-  const v3Args = (amountInWei: bigint, minOutWei: bigint) =>
-    ({
-      account,
-      chain,
-      address: router,
-      abi: V3_ROUTER_ABI,
-      functionName: "multicall" as const,
-      args: [deadline, [encodeSwap(amountInWei, minOutWei)]] as const,
-    }) as const;
-
-  const swapV3 = (amountInWei: bigint, minOutWei: bigint, value?: bigint) =>
-    walletClient.writeContract({ ...v3Args(amountInWei, minOutWei), value });
+  const probe = await probeRouter(chainKey);
+  if (isV3 && !probe.routerDeployed) {
+    throw new Error((await swapDiagnostic(chainKey)) ?? `Router unavailable on ${cfg.name}.`);
+  }
 
   /**
-   * Prove the swap works before taking a fee for it.
+   * Arguments for the swap call, wrapped in multicall(deadline, …) only when
+   * the router actually supports it.
+   *
+   * Wrapping unconditionally was a mistake: the deadline is worth having, but a
+   * router without the multicall extension reverts on an unknown selector, so
+   * the wrapper turned every working swap on such a chain into a failure. The
+   * wrapper is now conditional on the probe, and a chain that can't take it
+   * simply trades without an expiry — which is what it did before, and is
+   * strictly better than not trading.
+   */
+  const v3Args = (amountInWei: bigint, minOutWei: bigint) =>
+    probe.supportsMulticall
+      ? ({
+          account,
+          chain,
+          address: router,
+          abi: V3_ROUTER_ABI,
+          functionName: "multicall" as const,
+          args: [deadline, [encodeSwap(amountInWei, minOutWei)]] as const,
+        } as const)
+      : v3Path
+        ? ({
+            account,
+            chain,
+            address: router,
+            abi: V3_ROUTER_ABI,
+            functionName: "exactInput" as const,
+            args: [
+              {
+                path: v3Path,
+                recipient: account,
+                amountIn: amountInWei,
+                amountOutMinimum: minOutWei,
+              },
+            ] as const,
+          } as const)
+        : ({
+            account,
+            chain,
+            address: router,
+            abi: V3_ROUTER_ABI,
+            functionName: "exactInputSingle" as const,
+            args: [
+              {
+                tokenIn: route.tokens[0],
+                tokenOut: route.tokens[route.tokens.length - 1],
+                fee: route.fees[0] ?? feeTier,
+                recipient: account,
+                amountIn: amountInWei,
+                amountOutMinimum: minOutWei,
+                sqrtPriceLimitX96: 0n,
+              },
+            ] as const,
+          } as const);
+
+  const swapV3 = (amountInWei: bigint, minOutWei: bigint, value?: bigint) =>
+    walletClient.writeContract({ ...v3Args(amountInWei, minOutWei), value } as never);
+
+  /**
+   * Try to prove the swap fails before taking a fee for it.
    *
    * The fee is a separate transaction that must go first — the router pulls the
-   * remainder, so the balance has to be split beforehand. That ordering means a
-   * swap which was always going to revert would still cost the user 1%. A
-   * simulation costs nothing and closes that: if the swap can't succeed, nobody
-   * pays anything.
+   * remainder, so the balance has to be split beforehand — which means a swap
+   * that was always going to revert would still cost the user 1%. A simulation
+   * closes that at no cost.
    *
-   * A simulation that fails for an unrelated reason (the fee hasn't moved yet,
-   * so allowances and balances differ) must not block a good trade, so only a
-   * definite revert of the swap logic stops us.
+   * FAIL-OPEN, deliberately. At simulation time the fee hasn't moved and the
+   * approval hasn't happened, so a whole class of reverts is expected and means
+   * nothing. Blocking on any unrecognised revert (the first cut of this) stops
+   * perfectly good trades on any chain whose router phrases its errors
+   * differently. So this only refuses when the revert positively identifies a
+   * routing problem the trade cannot recover from.
    */
   const client = getPublicClient(chainKey);
   const assertSwapViable = async (amountInWei: bigint, minOutWei: bigint, value?: bigint) => {
     if (!isV3) return;
     try {
-      await client.simulateContract({ ...v3Args(amountInWei, minOutWei), account, value });
+      await client.simulateContract({ ...v3Args(amountInWei, minOutWei), account, value } as never);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
-      // Balance and allowance shortfalls are expected here: the fee transfer and
-      // the approval haven't happened yet at simulation time.
-      if (/transfer amount exceeds|insufficient|allowance|STF|balance/i.test(msg)) return;
-      throw new Error(
-        `This swap would fail — no fee has been charged. ${msg.split("\n")[0] || "Try a different amount."}`,
-      );
+      const msg = (e instanceof Error ? e.message : "").split("\n")[0];
+      // Only these say "this trade is impossible" rather than "state isn't
+      // ready yet": no pool at all, or the price moved past the slippage floor.
+      const fatal =
+        /Unexpected error|SPL|Too little received|Too much requested|no pool|Pool does not exist/i.test(
+          msg,
+        );
+      if (fatal) {
+        throw new Error(`This swap would fail — no fee has been charged. ${msg}`);
+      }
+      // Anything else: proceed. The wallet will show the real revert if there
+      // is one, and the user still gets to decide.
     }
   };
 

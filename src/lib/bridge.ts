@@ -97,11 +97,26 @@ export async function availableRails(from: string, to: string): Promise<BridgeRo
   if (relayOk) rails.push("relay");
 
   if (rails.length) return { rails };
+
+  // Name BOTH rails and which side of the pair is the problem. Collapsing this
+  // into one line hid the fact that these are two independent networks with
+  // different coverage, and "no route" alone gave no way to tell whether the
+  // chain is unsupported, the contracts aren't deployed yet, or the probe just
+  // couldn't reach anything.
+  const relayIds = await relaySupportedChainIds();
+  const missingOnRelay = [src, dst].filter((c) => relayIds.size > 0 && !relayIds.has(c.id));
+  const relayReason =
+    relayIds.size === 0
+      ? "Relay's chain list was unreachable"
+      : missingOnRelay.length
+        ? `Relay doesn't route ${missingOnRelay.map((c) => c.name).join(" or ")} yet`
+        : "Relay has no route for this pair";
+
   return {
     rails: [],
-    reason:
-      cctp.reason ??
-      `No route between ${src.name} and ${dst.name} yet — this opens automatically when one is live.`,
+    reason: `No route between ${src.name} and ${dst.name} yet. CCTP: ${
+      cctp.reason ?? "unavailable"
+    } Relay: ${relayReason}. This opens by itself when either goes live — nothing to redeploy.`,
   };
 }
 

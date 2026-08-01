@@ -17,6 +17,20 @@ import { readCache, writeCache } from "./persist";
 
 export const WHITELIST_CAP = 100;
 
+/**
+ * The whitelist is closed — all 100 spots are recorded as claimed.
+ *
+ * Set deliberately rather than derived from the roster: the allocation is
+ * finished, and the page must say so to everyone who opens it, including a
+ * visitor whose browser has no local state and would otherwise be told 100
+ * spots were still available.
+ *
+ * Everything else stays in place. The quest tasks still render, so the campaign
+ * reads as completed rather than deleted, and anyone who already claimed still
+ * sees their own card and spot number.
+ */
+export const WHITELIST_CLOSED = true;
+
 const KEY = "whitelist.v1";
 
 export type QuestId = "trade" | "tgGroup" | "tgChannel" | "xFollow" | "xRepost";

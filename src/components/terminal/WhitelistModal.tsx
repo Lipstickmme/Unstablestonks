@@ -7,6 +7,7 @@ import { useWallet } from "@/lib/wallet";
 import {
   QUESTS,
   WHITELIST_CAP,
+  WHITELIST_CLOSED,
   allTasksDone,
   cardNumber,
   claimSpot,
@@ -55,10 +56,16 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
 
   const done = allTasksDone(state);
   const claimed = state.spot != null && state.wallet != null;
-  const remaining = Math.max(0, WHITELIST_CAP - (taken ?? state.roster.length));
+  // Closed: every spot is recorded as taken, whatever this browser knows.
+  const takenCount = WHITELIST_CLOSED ? WHITELIST_CAP : (taken ?? state.roster.length);
+  const remaining = Math.max(0, WHITELIST_CAP - takenCount);
 
   const onClaim = () => {
     setError(null);
+    if (WHITELIST_CLOSED) {
+      setError("All 100 spots have been claimed. The allocation is closed.");
+      return;
+    }
     if (!wallet.address) {
       onClose();
       wallet.requestPicker();
@@ -107,12 +114,18 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
             <div className="text-sm font-medium leading-none">
-              {claimed ? "You're on the list" : "NFT whitelist"}
+              {claimed
+                ? "You're on the list"
+                : WHITELIST_CLOSED
+                  ? "Whitelist closed"
+                  : "NFT whitelist"}
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">
               {claimed
                 ? "Institutional Trader ID issued"
-                : `${remaining} of ${WHITELIST_CAP} spots left`}
+                : WHITELIST_CLOSED
+                  ? `Closed — ${WHITELIST_CAP}/${WHITELIST_CAP} claimed`
+                  : `${remaining} of ${WHITELIST_CAP} spots left`}
             </div>
           </div>
           <button
@@ -158,6 +171,17 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
             </>
           ) : (
             <>
+              {WHITELIST_CLOSED && (
+                <div className="mb-3 rounded-xl border border-border bg-surface px-3 py-2.5 text-center">
+                  <div className="num text-lg font-semibold leading-none">
+                    {WHITELIST_CAP}/{WHITELIST_CAP}
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Every whitelist spot has been claimed. The tasks below stay listed for reference
+                    — the allocation is confirmed against on-chain and social records before mint.
+                  </p>
+                </div>
+              )}
               <ul className="space-y-1.5">
                 {QUESTS.map((q) => {
                   const isDone = Boolean(state.tasks[q.id]);
@@ -209,15 +233,17 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
 
               <button
                 onClick={onClaim}
-                disabled={!done || claiming}
+                disabled={WHITELIST_CLOSED || !done || claiming}
                 className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 {claiming && <Loader2 className="h-4 w-4 animate-spin" />}
-                {!wallet.address
-                  ? "Connect wallet to claim"
-                  : done
-                    ? "Claim my spot"
-                    : "Finish all tasks"}
+                {WHITELIST_CLOSED
+                  ? `All ${WHITELIST_CAP} spots claimed`
+                  : !wallet.address
+                    ? "Connect wallet to claim"
+                    : done
+                      ? "Claim my spot"
+                      : "Finish all tasks"}
               </button>
               {error && <p className="mt-2 text-center text-[11px] text-bear">{error}</p>}
             </>

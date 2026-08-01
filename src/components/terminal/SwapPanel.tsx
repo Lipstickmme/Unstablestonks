@@ -9,6 +9,7 @@ import {
   feePreview,
   quoteSwap,
   swapEnabled,
+  swapDiagnostic,
   PLATFORM_FEE_BPS,
   type SwapQuote,
 } from "@/lib/swap";
@@ -64,6 +65,20 @@ export function SwapPanel({
   const tokenDecimals = token.decimals ?? 18;
   const amtNum = parseFloat(amount) || 0;
   const enabled = swapEnabled(chain);
+
+  // Ask the chain whether the configured router and quoter actually exist, once
+  // per chain. Without this a wrong address surfaced as "no liquidity", which is
+  // the one message guaranteed to send you looking in the wrong place.
+  const [infra, setInfra] = useState<string | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    swapDiagnostic(chainKey)
+      .then((d) => !cancel && setInfra(d))
+      .catch(() => !cancel && setInfra(null));
+    return () => {
+      cancel = true;
+    };
+  }, [chainKey]);
   const wrongChain = wallet.address != null && wallet.chainId !== chain.id;
   const inputSymbol = side === "buy" ? chain.nativeCurrency.symbol : token.symbol;
   const outputSymbol = side === "buy" ? token.symbol : chain.nativeCurrency.symbol;
@@ -201,7 +216,7 @@ export function SwapPanel({
     ? "Connect wallet"
     : wrongChain
       ? `Switch to ${chain.shortName}`
-      : !enabled
+      : !enabled || infra
         ? "Unavailable on this chain"
         : busy
           ? "Confirm in wallet…"
@@ -347,13 +362,14 @@ export function SwapPanel({
 
       <button
         onClick={onAction}
-        disabled={busy || (Boolean(wallet.address) && !wrongChain && !enabled)}
+        disabled={busy || (Boolean(wallet.address) && !wrongChain && (!enabled || Boolean(infra)))}
         className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
         {actionLabel}
       </button>
 
+      {infra && <p className="mt-2 text-center text-[11px] leading-relaxed text-warn">{infra}</p>}
       {!status && wallet.error && (
         <p className="mt-2 text-center text-[11px] text-bear">{wallet.error}</p>
       )}
