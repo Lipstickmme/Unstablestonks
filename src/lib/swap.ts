@@ -14,10 +14,24 @@ import { getErc20Allowance, getPublicClient } from "./data/rpc";
 //
 // Every swap collects PLATFORM_FEE_BPS of the INPUT into FEE_RECIPIENT and routes
 // the remainder through the chain's DEX router (Uniswap V2 or V3 interface).
-// The fee leg is a plain transfer, so treasury collection works on ANY chain.
-// Verified router addresses (Robinhood, Arc — from Uniswap's SDK; Stable — from
-// docs.stable.xyz, cross-checked via router.factory()) ship as defaults; any chain
-// can be overridden via VITE_ROUTER_<CHAIN> / VITE_QUOTER_<CHAIN>.
+//
+// HOW THE FEE REACHES THE TREASURY. Two shapes, picked by what the router can do:
+//
+//   Batched (preferred) — one transaction, via SwapRouter02's payments extension:
+//       multicall(deadline, [ pull(fee), sweepToken(fee, TREASURY), swap ])
+//     Atomic, so the fee cannot outlive a swap that reverted, and it costs one
+//     signature instead of two. Requires multicall + pull + sweepToken, all of
+//     which are probed on chain rather than assumed.
+//
+//   Separate — a plain ERC-20 (or native) transfer to TREASURY, then the swap.
+//     The fallback for routers without that extension, and the only option for a
+//     native-funded buy, since `pull` is ERC-20 only.
+//
+// The router/quoter addresses shipped as defaults came from Uniswap's SDK and
+// each chain's docs and could NOT be verified against a live RPC. probeRouter
+// checks them at runtime and swapDiagnostic names whatever is wrong, so a bad
+// address reports itself instead of masquerading as missing liquidity. Override
+// with VITE_ROUTER_<CHAIN> / VITE_QUOTER_<CHAIN>.
 //
 // Swaps route through a chain's INTERMEDIARY token (see getIntermediary). Usually
 // that's the wrapped-native, funded by sending native value. On chains whose gas
@@ -219,6 +233,33 @@ const V3_ROUTER_ABI = [
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
+  {
+    // PeripheryPaymentsExtended: transferFrom the caller into the router, so a
+    // later command in the same multicall can move it. This plus sweepToken is
+    // what lets the protocol fee ride INSIDE the swap transaction instead of
+    // being its own signature.
+    type: "function",
+    name: "pull",
+    stateMutability: "payable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "value", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    // PeripheryPayments: send the router's balance of a token to a recipient.
+    // With `pull` above: pull(fee) → sweepToken(fee, treasury) → swap.
+    type: "function",
+    name: "sweepToken",
+    stateMutability: "payable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "amountMinimum", type: "uint256" },
+      { name: "recipient", type: "address" },
+    ],
+    outputs: [],
+  },
 ] as const;
 
 export type SwapSide = "buy" | "sell";
@@ -348,6 +389,12 @@ interface RouterProbe {
   quoterDeployed: boolean;
   /** SwapRouter02's multicall(deadline, bytes[]) — needed for a deadline. */
   supportsMulticall: boolean;
+  /**
+   * SwapRouter02's payments extension (pull + sweepToken), which is what lets
+   * the protocol fee travel INSIDE the swap transaction: pull the fee into the
+   * router, sweep it to the treasury, swap — one signature instead of two.
+   */
+  supportsPayments: boolean;
   /** Set once a quoter shape is known to work, so we stop trying the other. */
   quoterKind?: "v2" | "v1";
 }
@@ -364,6 +411,7 @@ async function probeRouter(chainKey: ChainKey): Promise<RouterProbe> {
     routerDeployed: false,
     quoterDeployed: false,
     supportsMulticall: false,
+    supportsPayments: false,
   };
 
   try {
@@ -390,6 +438,27 @@ async function probeRouter(chainKey: ChainKey): Promise<RouterProbe> {
         probe.supportsMulticall = true;
       } catch {
         probe.supportsMulticall = false;
+      }
+
+      // sweepToken with amountMinimum 0 is a no-op on SwapRouter02 (the
+      // router's balance of anything is 0 ≥ 0, nothing moves) and an
+      // unknown-selector revert on a router without the payments extension.
+      // Probing with a call that CANNOT move funds is the point.
+      if (probe.supportsMulticall) {
+        const inter = getIntermediary(cfg);
+        if (inter) {
+          try {
+            await client.simulateContract({
+              address: cfg.router.address,
+              abi: V3_ROUTER_ABI,
+              functionName: "sweepToken",
+              args: [inter.address, 0n, FEE_RECIPIENT],
+            });
+            probe.supportsPayments = true;
+          } catch {
+            probe.supportsPayments = false;
+          }
+        }
       }
     }
   } catch {
@@ -887,6 +956,57 @@ export async function executeSwap(params: {
     walletClient.writeContract({ ...v3Args(amountInWei, minOutWei), value } as never);
 
   /**
+   * Fee + swap as ONE transaction, on routers that carry SwapRouter02's
+   * payments extension:
+   *
+   *   multicall(deadline, [
+   *     pull(feeToken, feeWei),                    // user → router
+   *     sweepToken(feeToken, feeWei, TREASURY),    // router → fee wallet
+   *     exactInput(...)                            // the swap itself
+   *   ])
+   *
+   * This is the answer to "how do the fees actually get to my wallet" on the
+   * swap side: the same transaction that trades also lands PLATFORM_FEE_BPS of
+   * the input in FEE_RECIPIENT, atomically. If the swap reverts the fee reverts
+   * with it, which retires the whole fee-before-doomed-swap problem — and it is
+   * one wallet prompt instead of two.
+   *
+   * The approval must cover fee + swap, since `pull` draws on the same
+   * allowance the swap does.
+   */
+  const batchedFeeSwapArgs = (
+    feeToken: `0x${string}`,
+    feeWei: bigint,
+    amountInWei: bigint,
+    minOutWei: bigint,
+  ) =>
+    ({
+      account,
+      chain,
+      address: router,
+      abi: V3_ROUTER_ABI,
+      functionName: "multicall" as const,
+      args: [
+        deadline,
+        [
+          encodeFunctionData({
+            abi: V3_ROUTER_ABI,
+            functionName: "pull",
+            args: [feeToken, feeWei],
+          }),
+          encodeFunctionData({
+            abi: V3_ROUTER_ABI,
+            functionName: "sweepToken",
+            args: [feeToken, feeWei, FEE_RECIPIENT],
+          }),
+          encodeSwap(amountInWei, minOutWei),
+        ],
+      ] as const,
+    }) as const;
+
+  const canBatchFee = isV3 && probe.supportsMulticall && probe.supportsPayments;
+
+  /**
    * Try to prove the swap fails before taking a fee for it.
    *
    * The fee is a separate transaction that must go first — the router pulls the
@@ -928,25 +1048,37 @@ export async function executeSwap(params: {
     const minOutWei = parseUnits(amountToString(minOut, tokenDecimals), tokenDecimals);
 
     if (inter.mode === "erc20") {
-      // Buy funded by the ERC-20 gas token (USDT0). Fee is an ERC-20 transfer,
-      // and the router pulls the remainder via transferFrom — no native value.
-      await assertSwapViable(swapWei, minOutWei);
+      // Buy funded by the ERC-20 gas token (USDT0).
+      if (canBatchFee) {
+        // One transaction: pull fee → sweep to treasury → swap. Atomic, so the
+        // fee cannot outlive a failed swap.
+        result.approveTxHash = await approveExact(interAddr, router, feeWei + swapWei);
+        const tx = await walletClient.writeContract(
+          batchedFeeSwapArgs(interAddr, feeWei, swapWei, minOutWei) as never,
+        );
+        result.feeTxHash = tx;
+        result.swapTxHash = tx;
+      } else {
+        // Fallback for routers without the payments extension: fee as its own
+        // transfer, then the swap.
+        await assertSwapViable(swapWei, minOutWei);
 
-      // 1. Protocol fee → treasury.
-      result.feeTxHash = await walletClient.writeContract({
-        account,
-        chain,
-        address: interAddr,
-        abi: ERC20_TX_ABI,
-        functionName: "transfer",
-        args: [FEE_RECIPIENT, feeWei],
-      });
+        // 1. Protocol fee → treasury.
+        result.feeTxHash = await walletClient.writeContract({
+          account,
+          chain,
+          address: interAddr,
+          abi: ERC20_TX_ABI,
+          functionName: "transfer",
+          args: [FEE_RECIPIENT, feeWei],
+        });
 
-      // 2. Approve the router for the swap remainder if needed.
-      result.approveTxHash = await approveExact(interAddr, router, swapWei);
+        // 2. Approve the router for the swap remainder if needed.
+        result.approveTxHash = await approveExact(interAddr, router, swapWei);
 
-      // 3. Router swap along the quoted route (no native value).
-      result.swapTxHash = await swapV3(swapWei, minOutWei);
+        // 3. Router swap along the quoted route (no native value).
+        result.swapTxHash = await swapV3(swapWei, minOutWei);
+      }
     } else {
       // Native path: fee is a native transfer; the router wraps the value.
       await assertSwapViable(swapWei, minOutWei, swapWei);
@@ -978,33 +1110,44 @@ export async function executeSwap(params: {
     const swapWei = parseUnits(amountToString(swapAmount, tokenDecimals), tokenDecimals);
     const minOutWei = parseUnits(amountToString(minOut, inter.decimals), inter.decimals);
 
-    await assertSwapViable(swapWei, minOutWei);
+    if (canBatchFee) {
+      // One transaction: pull the fee (in the token being sold) → sweep it to
+      // the treasury → swap the remainder. Atomic; one signature.
+      result.approveTxHash = await approveExact(token, router, feeWei + swapWei);
+      const tx = await walletClient.writeContract(
+        batchedFeeSwapArgs(token, feeWei, swapWei, minOutWei) as never,
+      );
+      result.feeTxHash = tx;
+      result.swapTxHash = tx;
+    } else {
+      await assertSwapViable(swapWei, minOutWei);
 
-    // 1. Protocol fee → treasury (ERC-20 transfer of the token being sold).
-    result.feeTxHash = await walletClient.writeContract({
-      account,
-      chain,
-      address: token,
-      abi: ERC20_TX_ABI,
-      functionName: "transfer",
-      args: [FEE_RECIPIENT, feeWei],
-    });
+      // 1. Protocol fee → treasury (ERC-20 transfer of the token being sold).
+      result.feeTxHash = await walletClient.writeContract({
+        account,
+        chain,
+        address: token,
+        abi: ERC20_TX_ABI,
+        functionName: "transfer",
+        args: [FEE_RECIPIENT, feeWei],
+      });
 
-    // 2. Approve router for the swap remainder if needed.
-    result.approveTxHash = await approveExact(token, router, swapWei);
+      // 2. Approve router for the swap remainder if needed.
+      result.approveTxHash = await approveExact(token, router, swapWei);
 
-    // 3. Router swap token → intermediary. On V3 the output settles as the
-    //    intermediary ERC-20 (USDT0, or wrapped-native) in the seller's wallet.
-    result.swapTxHash = isV3
-      ? await swapV3(swapWei, minOutWei)
-      : await walletClient.writeContract({
-          account,
-          chain,
-          address: router,
-          abi: V2_ROUTER_ABI,
-          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-          args: [swapWei, minOutWei, route.tokens, account, deadline],
-        });
+      // 3. Router swap token → intermediary. On V3 the output settles as the
+      //    intermediary ERC-20 (USDT0, or wrapped-native) in the seller's wallet.
+      result.swapTxHash = isV3
+        ? await swapV3(swapWei, minOutWei)
+        : await walletClient.writeContract({
+            account,
+            chain,
+            address: router,
+            abi: V2_ROUTER_ABI,
+            functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
+            args: [swapWei, minOutWei, route.tokens, account, deadline],
+          });
+    }
   }
 
   return result;

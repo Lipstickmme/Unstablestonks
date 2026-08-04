@@ -26,6 +26,31 @@ import { cctpStatus, clientFor } from "./cctp";
 
 const RELAY_API = "https://api.relay.link";
 
+/**
+ * WHERE THE BRIDGE FEE ACTUALLY ENDS UP.
+ *
+ * The two rails pay out completely differently, and the difference matters
+ * because one of them does not put anything in the wallet by itself.
+ *
+ *   CCTP   Direct. The fee is an ERC-20 transfer of USDC to FEE_RECIPIENT on
+ *          the source chain, in the same run as the burn. It is in the wallet
+ *          the moment that transaction confirms. Nothing to collect.
+ *
+ *   Relay  NOT direct. `appFees` accrues to the recipient as an OFF-CHAIN
+ *          balance — Relay does this to avoid paying gas on every transfer —
+ *          and it has to be claimed manually. Nothing arrives in the wallet on
+ *          its own, however many bridges run.
+ *
+ *          Claim at https://relay.link/claim-app-fees, connected as
+ *          FEE_RECIPIENT. ETH, USDC and USDT settle on BASE regardless of which
+ *          chain the transfer originated on; anything else is claimed on the
+ *          origin chain. There is no minimum, and the Base claim is free.
+ *
+ * Both rails charge PLATFORM_FEE_BPS on the INPUT, so the two are consistent
+ * from the user's side — the quote they see is already net of it either way.
+ */
+export const RELAY_FEE_CLAIM_URL = "https://relay.link/claim-app-fees";
+
 /** Relay uses the zero address for a chain's native currency. */
 export const NATIVE = "0x0000000000000000000000000000000000000000" as const;
 
