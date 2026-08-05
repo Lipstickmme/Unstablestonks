@@ -16,6 +16,7 @@ import { useSpikes, spikeLabel } from "@/lib/spikes";
 import { trippedHosts } from "@/lib/net";
 import { QuickBuyModal } from "./QuickBuyModal";
 import { PortfolioPanel } from "./PortfolioPanel";
+import { BubbleMap } from "./BubbleMap";
 import { TokenIcon } from "./TokenIcon";
 import {
   Activity,
@@ -38,6 +39,7 @@ import {
   Send,
   Wallet,
   Database,
+  Circle,
 } from "lucide-react";
 
 type SortKey =
@@ -50,7 +52,7 @@ type SortKey =
   | "socialHeat"
   | "priceChange24h"
   | "holders";
-type Filter = "all" | "new" | "trending" | "portfolio";
+type Filter = "all" | "new" | "trending" | "portfolio" | "bubbles";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   { key: "all", label: "All launches" },
@@ -60,6 +62,9 @@ const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   // connected wallet's own holdings. It lives here anyway because it answers
   // the same question from the other side: what's moving, and what do I own.
   { key: "portfolio", label: "Portfolio", icon: <Wallet className="h-3 w-3" /> },
+  // The same tokens, weighed rather than listed. A table answers "what is this
+  // worth"; the map answers "what does the chain look like".
+  { key: "bubbles", label: "Bubbles", icon: <Circle className="h-3 w-3" /> },
 ];
 
 function StatusBadge({ s }: { s: TokenStatus }) {
@@ -408,6 +413,9 @@ export function TokenTable({
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
   const isPortfolio = filter === "portfolio";
+  const isBubbles = filter === "bubbles";
+  // Both replace the table body rather than filtering it.
+  const isPanel = isPortfolio || isBubbles;
 
   // Rows that moved sharply since the last refresh. Fed the whale counts too,
   // so a cluster of five-figure holders arriving counts as a spike in its own
@@ -433,7 +441,7 @@ export function TokenTable({
   // A search from the header is about launches — don't leave it filtering a tab
   // that has no list to filter.
   useEffect(() => {
-    if (query && isPortfolio) setFilter("all");
+    if (query && isPanel) setFilter("all");
     // Intentionally keyed on the query alone: switching to Portfolio while a
     // filter is typed should not bounce straight back out.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -539,7 +547,7 @@ export function TokenTable({
             >
               {f.icon}
               {f.label}
-              {filter === f.key && f.key !== "portfolio" && (
+              {filter === f.key && f.key !== "portfolio" && f.key !== "bubbles" && (
                 <span className="num text-[10px] text-muted-foreground">{rows.length}</span>
               )}
             </button>
@@ -548,7 +556,7 @@ export function TokenTable({
         <div className="ml-auto flex items-center gap-2">
           {/* The text filter belongs to the launches list; the portfolio is
               already scoped to one wallet and has nothing to narrow. */}
-          {!isPortfolio && (
+          {!isPanel && (
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -559,12 +567,14 @@ export function TokenTable({
           <span className="chip">
             <span className="live-dot" /> live
           </span>
-          {!isPortfolio && <SourceReadout />}
+          {!isPanel && <SourceReadout />}
           <StoreReadout />
         </div>
       </div>
 
-      {isPortfolio ? (
+      {isBubbles ? (
+        <BubbleMap tokens={tokens} loading={loading} />
+      ) : isPortfolio ? (
         <PortfolioPanel tokens={tokens} trades={trades ?? []} loading={loading} />
       ) : (
         <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">

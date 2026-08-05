@@ -94,11 +94,13 @@ export interface ChainConfig {
   /** DYOR Fun V3 API path segment — the API is namespaced /api/<slug>/... */
   dyorSlug?: string;
   /**
-   * DexScreener chain slug. DexScreener does not currently index Stable,
-   * Robinhood or Arc — its published chain list covers none of them — so this
-   * is UNSET by default and every DexScreener call is skipped rather than
-   * firing a request that 404s on every cycle. Set the env override the day a
-   * chain gets listed and both the token feed and the paid check start working.
+   * DexScreener chain slug.
+   *
+   * Robinhood IS on DexScreener's published chain list, as "robinhood" — the
+   * earlier note here claimed otherwise and that was wrong, which is part of why
+   * the paid-listing check never fired. Stable and Arc are genuinely absent.
+   * When unset, dexscreener.ts asks DexScreener itself (a token lookup returns
+   * the chainId it files the token under) rather than assuming.
    */
   dexscreenerSlug?: string;
   /** Per-chain accent (oklch) so the UI reskins on switch. */
@@ -179,7 +181,12 @@ export const CHAINS: Record<ChainKey, ChainConfig> = {
     // Robinhood Chain is indexed by GeckoTerminal — unlocks DEX prices/vol/trades.
     geckoterminalNetwork: "robinhood",
     dyorSlug: "robinhood",
-    dexscreenerSlug: env("VITE_DS_NETWORK_ROBINHOOD"),
+    // DexScreener lists this chain as "robinhood" — confirmed against its
+    // supported-chain list. Naming it here means the paid-listing check works on
+    // the first token asked rather than after a discovery round trip. Stable and
+    // Arc are genuinely absent from that list, so they stay unset and the
+    // discovery path in dexscreener.ts reports them honestly as not indexed.
+    dexscreenerSlug: env("VITE_DS_NETWORK_ROBINHOOD") ?? "robinhood",
     accent: "oklch(0.87 0.19 128)", // Robinhood lime/green
     tagline: "Arbitrum Orbit L2 · tokenized-stock rails · ~100ms blocks",
   },

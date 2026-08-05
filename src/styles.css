@@ -433,6 +433,26 @@
   animation: swipe-sheen 1.1s ease-out both;
 }
 
+/* Bubbles settling into the map, biggest first.
+   This runs on the bubble's SKIN, not on the link that positions it: the link
+   owns translate(-50%,-50%) and the hover scale, and an animation with
+   fill-mode `both` on the same element would freeze that transform and kill the
+   hover entirely. */
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.bubble-in {
+  animation: bubble-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(min(var(--i, 0) * 14ms, 420ms));
+}
+
 /* Donut arcs sweeping in on first paint. */
 @keyframes donut-draw {
   from {
@@ -524,7 +544,8 @@
   }
   .spike-badge,
   .donut-draw,
-  .swipe-sheen {
+  .swipe-sheen,
+  .bubble-in {
     animation: none;
   }
   /* The banner still needs to arrive and leave, just without the travel. */

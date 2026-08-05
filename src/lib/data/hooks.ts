@@ -549,7 +549,11 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
     .sort((a, b) => b.vol24h - a.vol24h)
     .slice(0, 12)
     .map((t) => t.address);
-  const key = targets.join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = [...targets].sort().join(",");
   return useQuery<Record<string, RowEnrichment>>({
     queryKey: ["row-enrichment", chainKey, key],
     // Keep the previous result while a new key resolves. Every one of these
@@ -744,7 +748,14 @@ export function useTokenInsights(tokens: TokenRow[] | undefined) {
       totalSupply: t.totalSupply ?? 0,
       price: t.price,
     }));
-  const key = targets.map((t) => t.address).join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = targets
+    .map((t) => t.address)
+    .sort()
+    .join(",");
 
   return useQuery<Record<string, TokenInsight>>({
     queryKey: ["token-insights", chainKey, key],
@@ -787,7 +798,11 @@ export function useTraderHoldings(
 ) {
   const { chainKey } = useChain();
   const targets = wallets.slice(0, MAX_TRADER_BALANCES);
-  const key = targets.join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = [...targets].sort().join(",");
 
   return useQuery<Record<string, number>>({
     queryKey: ["trader-holdings", chainKey, token ?? "", key],
@@ -847,7 +862,11 @@ export function useTraderBalances(wallets: string[], trades: TradeEvent[]) {
   }, [trades, tokensQ.data]);
 
   const targets = wallets.filter((w) => pairs.has(w)).slice(0, MAX_TRADER_BALANCES);
-  const key = targets.join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = [...targets].sort().join(",");
 
   return useQuery<Record<string, number>>({
     queryKey: ["trader-balances", chainKey, key],
@@ -921,7 +940,14 @@ export function useChainTrades(tokens: TokenRow[] | undefined) {
     .filter((t) => t.indexed && t.vol24h > 0)
     .slice(0, 8)
     .map((t) => ({ address: t.address, symbol: t.symbol, pool: t.primaryPool }));
-  const key = top.map((t) => t.address).join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = top
+    .map((t) => t.address)
+    .sort()
+    .join(",");
   return useQuery<TradeEvent[]>({
     queryKey: ["chain-trades", chainKey, key],
     // Keep the previous result while a new key resolves. Every one of these
@@ -1033,7 +1059,14 @@ export function useWalletPortfolio(
     [tokens, gasTwin],
   );
 
-  const key = targets.map((t) => t.address).join(",");
+  // Sorted, so the key identifies the SET rather than the order. The token list
+  // reorders on every refresh as volumes tick, and an order-dependent key made a
+  // new cache entry each time — which is why whale watch and the bundle column
+  // blinked out and refilled every thirty seconds. Same members, same key.
+  const key = targets
+    .map((t) => t.address)
+    .sort()
+    .join(",");
 
   return useQuery<Portfolio>({
     queryKey: ["portfolio", chainKey, wallet ?? "", key],
