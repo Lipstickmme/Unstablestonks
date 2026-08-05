@@ -459,7 +459,11 @@ export function TokenTable({
 }) {
   const { chain } = useChain();
   const watchlist = useWatchlist();
-  const [sort, setSort] = useState<SortKey>("vol24h");
+  // Market cap, not volume. Volume ranks whatever happened to be churning in the
+  // last day, which puts a token that got farmed for an afternoon above one the
+  // chain is actually built around. Market cap is the steadier read of what
+  // matters here, and the Trending tab still exists for the other question.
+  const [sort, setSort] = useState<SortKey>("mcap");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [filter, setFilter] = useState<Filter>(forceTab ?? "all");
   const [query, setQuery] = useState(initialQuery ?? "");
