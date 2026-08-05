@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { kvCommand, kvEnabled, kvGetJson, kvIncr, kvPipeline, kvSetJson, kvSourceName } from "./kv";
-import { WHITELIST_CAP } from "./whitelist";
+import { WHITELIST_BASELINE, WHITELIST_CAP } from "./whitelist";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Server-side persistence, all optional.
@@ -15,8 +15,10 @@ import { WHITELIST_CAP } from "./whitelist";
 //              indexers resolve, and logo URLs arrive with the row rather than
 //              after an enrichment pass — which is the actual reason icons
 //              "load every time".
-//   whitelist  One roster for everyone, so spot #7 means the 7th person, not
-//              the 7th claim in that browser.
+//   whitelist  One roster for everyone, so a spot number means the same thing to
+//              every visitor rather than counting claims per browser. The roster
+//              holds PUBLIC claims only; the pre-allocated block is added on top
+//              (see WHITELIST_BASELINE) when a number is shown or issued.
 //   analytics  Visit and event counters.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -236,42 +238,49 @@ export const claimWhitelistSpot = createServerFn({ method: "POST" })
       return { ok: false, taken: 0, cap: WHITELIST_CAP, shared: false };
     }
 
+    // The roster holds PUBLIC claims only, so its length is 1, 2, 3… while the
+    // page counts the pre-allocated block too. Every spot number handed out is
+    // offset past that block, otherwise the first public claimer would be issued
+    // card #001 while the counter beside it read 61/100.
+    const offset = (n: number) => n + WHITELIST_BASELINE;
+
     // Already claimed? Return the same spot rather than consuming another.
     const existing = await kvGetJson<number>(key.wlWallet(wallet));
     if (typeof existing === "number") {
-      const taken = (await kvPipeline<number>([["LLEN", key.wlList]]))?.[0] ?? existing;
-      return { ok: true, spot: existing, taken, cap: WHITELIST_CAP, shared: true };
+      const len = (await kvPipeline<number>([["LLEN", key.wlList]]))?.[0] ?? 0;
+      return { ok: true, spot: existing, taken: offset(len), cap: WHITELIST_CAP, shared: true };
     }
 
     const len = (await kvPipeline<number>([["LLEN", key.wlList]]))?.[0] ?? 0;
-    if (len >= WHITELIST_CAP) {
+    if (offset(len) >= WHITELIST_CAP) {
       return {
         ok: false,
-        taken: len,
+        taken: offset(len),
         cap: WHITELIST_CAP,
         reason: "All spots have been claimed.",
         shared: true,
       };
     }
 
-    // RPUSH returns the new length, which IS the spot number. Redis runs
-    // commands one at a time, so two simultaneous claims get 7 and 8 rather
+    // RPUSH returns the new length, which IS the position in the queue. Redis
+    // runs commands one at a time, so two simultaneous claims get 7 and 8 rather
     // than both getting 7 — the reason this belongs on a server at all.
     const pushed = await kvPipeline<number>([["RPUSH", key.wlList, wallet]]);
-    const spot = pushed?.[0];
-    if (typeof spot !== "number" || spot < 1) {
+    const position = pushed?.[0];
+    if (typeof position !== "number" || position < 1) {
       return {
         ok: false,
-        taken: len,
+        taken: offset(len),
         cap: WHITELIST_CAP,
         reason: "Could not claim.",
         shared: true,
       };
     }
+    const spot = offset(position);
     if (spot > WHITELIST_CAP) {
       return {
         ok: false,
-        taken: spot,
+        taken: WHITELIST_CAP,
         cap: WHITELIST_CAP,
         reason: "All spots have been claimed.",
         shared: true,

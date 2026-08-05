@@ -17,19 +17,22 @@ import { readCache, writeCache } from "./persist";
 
 export const WHITELIST_CAP = 100;
 
+/** The whitelist is open again — claiming works. */
+export const WHITELIST_CLOSED = false;
+
 /**
- * The whitelist is closed — all 100 spots are recorded as claimed.
+ * Spots already allocated before public claiming, counted against the cap.
  *
- * Set deliberately rather than derived from the roster: the allocation is
- * finished, and the page must say so to everyone who opens it, including a
- * visitor whose browser has no local state and would otherwise be told 100
- * spots were still available.
+ * This is a SET figure, not a measured one: it stands for the team, partner and
+ * early-contributor allocations that were never going to come through this page,
+ * so the roster here can't know about them. Displayed as taken so the counter
+ * reflects what is genuinely left rather than only what this app handed out.
  *
- * Everything else stays in place. The quest tasks still render, so the campaign
- * reads as completed rather than deleted, and anyone who already claimed still
- * sees their own card and spot number.
+ * Named as a baseline rather than folded into the count silently, so nobody
+ * later reads the number on screen as a live tally of on-page claims. Public
+ * claims are added on top of it, and the cap still stops at WHITELIST_CAP.
  */
-export const WHITELIST_CLOSED = true;
+export const WHITELIST_BASELINE = 60;
 
 const KEY = "whitelist.v1";
 
