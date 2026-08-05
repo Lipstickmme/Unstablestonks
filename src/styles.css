@@ -453,6 +453,30 @@
   animation-delay: calc(min(var(--i, 0) * 14ms, 420ms));
 }
 
+/* Bubbles drifting, so the map reads as a live market rather than a chart.
+   Tiny amplitude on purpose: enough that the field is never quite still, small
+   enough that nothing becomes hard to click or read. Hovering stops the bubble
+   under the cursor so it can be aimed at. */
+@keyframes bubble-drift {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: var(--drift-x, 1px) -3px;
+  }
+}
+.bubble-drift {
+  translate: 0 0;
+  animation: bubble-drift var(--drift-dur, 8s) ease-in-out infinite;
+  animation-delay: var(--drift-delay, 0s);
+  transition: scale 0.2s ease;
+}
+.bubble-drift:hover {
+  animation-play-state: paused;
+  scale: 1.06;
+}
+
 /* Donut arcs sweeping in on first paint. */
 @keyframes donut-draw {
   from {
@@ -545,7 +569,8 @@
   .spike-badge,
   .donut-draw,
   .swipe-sheen,
-  .bubble-in {
+  .bubble-in,
+  .bubble-drift {
     animation: none;
   }
   /* The banner still needs to arrive and leave, just without the travel. */

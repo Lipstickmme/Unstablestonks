@@ -5,6 +5,7 @@ import { formatUSD, shortAddr } from "@/lib/format";
 import type { TradeEvent } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
 import { useTraderBalances } from "@/lib/data/hooks";
+import { isQuoteAsset } from "@/lib/quote-assets";
 
 /**
  * Whale buys.
@@ -31,9 +32,16 @@ export function WhaleWatch({
   /** Minimum token holding value for a buyer to qualify at any size. */
   walletThreshold?: number;
 }) {
-  const { chain } = useChain();
+  const { chain, chainKey } = useChain();
 
-  const buys = useMemo(() => trades.filter((t) => t.side === "buy"), [trades]);
+  // Buys only, and never the money side. Following a whale is about seeing what
+  // they bought — "whale bought USDT" is just the settlement leg of a trade
+  // whose interesting half is a different row entirely.
+  const buys = useMemo(
+    () =>
+      trades.filter((t) => t.side === "buy" && !isQuoteAsset(chainKey, t.tokenAddress, t.symbol)),
+    [trades, chainKey],
+  );
 
   // Value each buyer's holding of the token they bought. Batched into one
   // multicall per token by the hook.

@@ -14,6 +14,8 @@ import { Link } from "@tanstack/react-router";
 import { formatNum, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
 import { TokenIcon } from "./TokenIcon";
+import { useChain } from "@/lib/chain-context";
+import { isQuoteAsset } from "@/lib/quote-assets";
 
 /**
  * Four leaderboards, each reading the top 20 and showing 4 at a time.
@@ -36,12 +38,16 @@ const ROTATE_MS = 6_500;
 type Kind = "mcap" | "vol" | "holders" | "heat";
 
 export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
+  const { chainKey } = useChain();
   const [page, setPage] = useState(0);
   const [paused, setPaused] = useState(false);
 
   const cards = useMemo(() => {
+    // A stablecoin tops "market cap" and "24h volume" on every chain, every
+    // cycle, and tells you nothing. These boards are for launches.
+    const pool = tokens.filter((t) => !isQuoteAsset(chainKey, t.address, t.symbol));
     const top = (pick: (t: TokenRow) => number) =>
-      [...tokens]
+      [...pool]
         .filter((t) => pick(t) > 0)
         .sort((a, b) => pick(b) - pick(a))
         .slice(0, DEPTH);
@@ -73,7 +79,7 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
         kind: "heat" as Kind,
       },
     ];
-  }, [tokens]);
+  }, [tokens, chainKey]);
 
   // Only page as far as there is data to page through. A chain with six ranked
   // tokens shouldn't cycle through three empty screens.

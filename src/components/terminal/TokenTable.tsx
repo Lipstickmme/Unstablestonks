@@ -14,6 +14,7 @@ import { useChain } from "@/lib/chain-context";
 import { useWatchlist } from "@/lib/watchlist";
 import { useSpikes, spikeLabel } from "@/lib/spikes";
 import { trippedHosts } from "@/lib/net";
+import { isQuoteAsset } from "@/lib/quote-assets";
 import { QuickBuyModal } from "./QuickBuyModal";
 import { PortfolioPanel } from "./PortfolioPanel";
 import { BubbleMap } from "./BubbleMap";
@@ -457,6 +458,9 @@ export function TokenTable({
   const [filter, setFilter] = useState<Filter>(forceTab ?? "all");
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
+  // Quote assets are hidden by default — see quote-assets.ts. Toggleable rather
+  // than absolute: they are real tokens, just not launches.
+  const [showQuote, setShowQuote] = useState(false);
   const isPortfolio = filter === "portfolio";
   const isBubbles = filter === "bubbles";
   // Both replace the table body rather than filtering it.
@@ -494,6 +498,9 @@ export function TokenTable({
 
   const rows = useMemo(() => {
     let r = tokens;
+    // The money side of every pair — WETH, USDT0, WgUSDT — outranks real
+    // launches on volume purely by being one half of every trade on the chain.
+    if (!showQuote) r = r.filter((t) => !isQuoteAsset(chain.key, t.address, t.symbol));
     if (watchOnly) r = r.filter((t) => watchlist.has(t.address));
     // "New" is an age question, not a badge question: the NEW badge only lasts
     // an hour, but a launch scanned off the chain minutes ago has no volume yet
@@ -521,7 +528,7 @@ export function TokenTable({
       const bv = val(b);
       return dir === "desc" ? bv - av : av - bv;
     });
-  }, [tokens, sort, dir, filter, query, watchOnly, watchlist]);
+  }, [tokens, sort, dir, filter, query, watchOnly, watchlist, showQuote, chain.key]);
 
   function toggleSort(k: SortKey) {
     if (sort === k) setDir(dir === "desc" ? "asc" : "desc");
@@ -609,6 +616,21 @@ export function TokenTable({
               placeholder="Filter…"
               className="w-44 rounded-full border border-border bg-background px-3 py-1.5 text-xs outline-none focus:border-ring"
             />
+          )}
+          {!isPanel && (
+            <button
+              onClick={() => setShowQuote((v) => !v)}
+              title={
+                showQuote
+                  ? "Hide WETH, USDT0 and other quote assets"
+                  : "Show WETH, USDT0 and other quote assets — they're hidden because they're the money side of every pair, not launches"
+              }
+              className={`chip !py-0 text-[9px] transition-colors ${
+                showQuote ? "border-primary/40 text-primary" : "text-muted-foreground"
+              }`}
+            >
+              {showQuote ? "quote assets shown" : "launches only"}
+            </button>
           )}
           <span className="chip">
             <span className="live-dot" /> live

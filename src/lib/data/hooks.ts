@@ -32,7 +32,7 @@ import {
 } from "./geckoterminal";
 import { getErc20Balance, getErc20Meta, getNativeBalance, getRpcHealth } from "./rpc";
 import { fetchDyorToken, fetchDyorTokens, type DyorTokenInfo } from "./dyor";
-import { getTokenHolders } from "./holders";
+import { deriveHolderCount, getTokenHolders } from "./holders";
 import { sharedBalances } from "./balances";
 import { fetchContractCreator } from "../launch-scan";
 import { fetchExplorerStats } from "../explorer-stats";
@@ -619,6 +619,34 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
               e.priceChange24h = top.priceChange24h;
               e.sparkline = top.sparkline;
             }
+            // ── On-chain fallback ────────────────────────────────────────
+            // Holders and age are the two fields with NO on-chain path until
+            // now: both came only from an indexer, so on a chain without one
+            // (Stable has no Blockscout) the columns were blank for every token
+            // regardless of how much real activity it had. The chain knows both.
+            //
+            // Only when the indexers came back empty, and only for rows that
+            // still lack the field — this is real work, and it should be spent
+            // filling gaps rather than re-deriving what GeckoTerminal just gave
+            // us for free.
+            const row = rows.find((t) => t.address === addr);
+            if (!e.holders && row && !row.holders) {
+              const supply = row.totalSupply ?? 0;
+              if (supply > 0) {
+                const count = await deriveHolderCount(
+                  chainKey,
+                  chain,
+                  addr,
+                  row.decimals ?? 18,
+                  supply,
+                ).catch(() => 0);
+                // A floor, not a total — see deriveHolderCount. Recorded only
+                // when it found something, so a failed scan never writes a 0
+                // that would read as "this token has no holders".
+                if (count > 0) e.holders = count;
+              }
+            }
+
             if (Object.keys(e).length) out[addr] = e;
           }),
         );

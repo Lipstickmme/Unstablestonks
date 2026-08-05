@@ -17,6 +17,7 @@ import {
   applyDyor,
 } from "@/lib/data/hooks";
 import { analyzeBundlesByToken } from "@/lib/bundles";
+import { isQuoteAsset } from "@/lib/quote-assets";
 import { useRotatingXHeat } from "@/lib/data/social";
 import { useChain } from "@/lib/chain-context";
 import { AlertTriangle } from "lucide-react";
@@ -52,7 +53,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Terminal() {
-  const { chain } = useChain();
+  const { chain, chainKey } = useChain();
   const { q, view } = Route.useSearch();
   const statsQ = useChainStats();
   const tokensQ = useTokens();
@@ -110,7 +111,13 @@ function Terminal() {
   }, [tokens]);
 
   const tradesQ = useChainTrades(tokens);
-  const chainTrades = useMemo(() => tradesQ.data ?? [], [tradesQ.data]);
+  // Drop the money side once, here, so every panel downstream — whale watch,
+  // bundle detection, the portfolio's activity — inherits a feed about tokens
+  // rather than about settlement.
+  const chainTrades = useMemo(
+    () => (tradesQ.data ?? []).filter((t) => !isQuoteAsset(chainKey, t.tokenAddress, t.symbol)),
+    [tradesQ.data, chainKey],
+  );
   // Per-token bundle stats so every row in the list carries its own read.
   const bundlesByToken = useMemo(() => analyzeBundlesByToken(chainTrades), [chainTrades]);
 

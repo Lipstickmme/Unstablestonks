@@ -4,6 +4,8 @@ import { Coins, Flame } from "lucide-react";
 import { formatNum, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
 import { TokenIcon } from "./TokenIcon";
+import { useChain } from "@/lib/chain-context";
+import { isQuoteAsset } from "@/lib/quote-assets";
 
 /**
  * The whole chain at a glance: one bubble per token, area proportional to the
@@ -102,17 +104,21 @@ function pack(items: { token: TokenRow; value: number }[]): Bubble[] {
 }
 
 export function BubbleMap({ tokens, loading }: { tokens: TokenRow[]; loading?: boolean }) {
+  const { chainKey } = useChain();
   const [metric, setMetric] = useState<Metric>("mcap");
   const [hover, setHover] = useState<string | null>(null);
 
   const bubbles = useMemo(() => {
     const items = tokens
+      // A stablecoin's market cap dwarfs every token this map exists to compare,
+      // so one bubble would fill the canvas and flatten the rest to dots.
+      .filter((t) => !isQuoteAsset(chainKey, t.address, t.symbol))
       .map((t) => ({ token: t, value: metric === "mcap" ? t.mcap : t.vol24h }))
       .filter((x) => x.value > 0)
       .sort((a, b) => b.value - a.value)
       .slice(0, MAX_BUBBLES);
     return pack(items);
-  }, [tokens, metric]);
+  }, [tokens, metric, chainKey]);
 
   const total = bubbles.reduce((s, b) => s + b.value, 0);
 
@@ -179,14 +185,43 @@ export function BubbleMap({ tokens, loading }: { tokens: TokenRow[]; loading?: b
                 onFocus={() => setHover(t.address)}
                 onBlur={() => setHover(null)}
                 aria-label={`${t.symbol} — ${formatUSD(b.value)}`}
-                className="absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center transition-transform duration-200 hover:z-20 hover:scale-[1.06]"
-                style={{
-                  left: `${left}%`,
-                  top: `${top}%`,
-                  width: `${size}%`,
-                  aspectRatio: "1",
-                }}
+                className="bubble-drift absolute grid -translate-x-1/2 -translate-y-1/2 place-items-center hover:z-20"
+                style={
+                  {
+                    left: `${left}%`,
+                    top: `${top}%`,
+                    width: `${size}%`,
+                    aspectRatio: "1",
+                    // Own phase and period per bubble. Shared timing would have
+                    // sixty bubbles breathing in unison, which reads as the page
+                    // flickering rather than a market moving. Derived from the
+                    // index so it is stable across refreshes.
+                    "--drift-delay": `${(i % 11) * -0.9}s`,
+                    "--drift-dur": `${7 + (i % 5) * 1.6}s`,
+                    "--drift-x": `${i % 2 ? 1 : -1}px`,
+                  } as React.CSSProperties
+                }
               >
+                {/* Token artwork fills the bubble, dimmed so the label stays
+                    legible on top of it. Only on bubbles big enough to show it
+                    as a picture rather than a smudge. */}
+                {b.r > 26 && t.logoUrl && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-[3px] overflow-hidden rounded-full opacity-30"
+                  >
+                    <img
+                      src={t.logoUrl}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        (e.currentTarget.parentElement as HTMLElement).style.display = "none";
+                      }}
+                    />
+                  </span>
+                )}
                 {/* The skin carries the colour and the entrance animation; the
                     link above carries position and hover. Keeping them apart is
                     what lets both work at once. */}

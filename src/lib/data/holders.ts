@@ -287,3 +287,31 @@ export async function deriveTopHolders(
     inFlight.delete(cacheKey);
   }
 }
+
+/**
+ * A holder COUNT for a token no indexer covers.
+ *
+ * This is the permanent answer to the blank holders column on Stable. That
+ * figure has only ever come from a third party — Blockscout's token registry, or
+ * GeckoTerminal's token info — and Stable has neither, so the column was empty
+ * for every token on the chain no matter how much real activity it had.
+ *
+ * The chain knows. `getTokenHolders` already scans Transfer logs and reads a
+ * balance for every address it finds, so the count of those with a positive
+ * balance costs nothing extra — it is a by-product of work already done.
+ *
+ * It is a FLOOR, and labelled that way. The scan sees a bounded window and a
+ * bounded number of candidates, so a holder who bought long ago and has never
+ * moved since won't be in it. Understating is the honest failure direction here:
+ * a floor derived from real balances beats a blank cell, and beats a guess.
+ */
+export async function deriveHolderCount(
+  key: ChainKey,
+  cfg: ChainConfig,
+  token: string,
+  decimals: number,
+  totalSupply: number,
+): Promise<number> {
+  const holders = await getTokenHolders(key, cfg, token, decimals, totalSupply, MAX_CANDIDATES);
+  return holders.filter((h) => h.amount > 0).length;
+}
