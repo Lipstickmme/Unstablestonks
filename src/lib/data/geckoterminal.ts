@@ -301,13 +301,20 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
       } else {
         existing._onDex = true;
       }
-      // Deeper pool wins as the primary venue/pricing source.
+      // Liquidity is a SUM over every pool, unconditionally. This used to sit
+      // inside the "deeper pool wins" branch below, so a shallower pool seen
+      // after a deeper one was silently dropped from the total — the reserve of
+      // any second venue simply never counted.
+      existing.liquidityUsd = (existing.liquidityUsd ?? 0) + reserve;
+      existing.poolCount = (existing.poolCount ?? 1) + 1;
+
+      // The deepest pool wins as the primary venue and pricing source. That IS
+      // a "biggest wins" question — price comes from one pool, not from a sum.
       if (reserve > existing._reserve) {
         existing._reserve = reserve;
         existing.primaryPool = a.address ?? existing.primaryPool;
         existing.price = price || existing.price;
         existing.dexName = dexName;
-        existing.liquidityUsd = (existing.liquidityUsd ?? 0) + reserve;
         existing.sparkline = sparklineFrom(pc);
         existing.priceChange24h = n(pc.h24);
         existing.priceChange1h = n(pc.h1);

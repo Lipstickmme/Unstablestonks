@@ -177,8 +177,13 @@ function VenueCell({ t }: { t: TokenRow }) {
  * Only DEX sources know this (GeckoTerminal pool reserves, DexScreener). A token
  * no pricing source covers has no liquidity figure to show — which is not zero
  * liquidity, so it reads as "—".
+ *
+ * The figure is a SUM across every venue the token trades in, not the deepest
+ * one. A token can be split across a Uniswap pool and a native DEX's pool, and
+ * only counting one of them understates its real depth by whatever sits in the
+ * other. The tooltip names the venue count so the number is auditable.
  */
-function Liquidity({ usd, mcap }: { usd?: number; mcap: number }) {
+function Liquidity({ usd, mcap, pools }: { usd?: number; mcap: number; pools?: number }) {
   if (!usd || usd <= 0) {
     return (
       <span className="num text-xs text-muted-foreground" title="No indexed pool reserves">
@@ -188,12 +193,13 @@ function Liquidity({ usd, mcap }: { usd?: number; mcap: number }) {
   }
   const ratio = mcap > 0 ? (usd / mcap) * 100 : undefined;
   const thin = ratio != null && ratio < 2;
+  const across = pools && pools > 1 ? ` across ${pools} pools` : "";
   return (
     <span
       title={
         ratio != null
-          ? `${formatUSD(usd)} of pool liquidity — ${ratio.toFixed(1)}% of market cap`
-          : `${formatUSD(usd)} of pool liquidity`
+          ? `${formatUSD(usd)} of pool liquidity${across} — ${ratio.toFixed(1)}% of market cap`
+          : `${formatUSD(usd)} of pool liquidity${across}`
       }
     >
       <span className="num block text-xs leading-tight">{formatUSD(usd)}</span>
@@ -846,7 +852,7 @@ export function TokenTable({
                       </div>
                     </td>
                     <td className="px-1.5 py-2 text-right">
-                      <Liquidity usd={t.liquidityUsd} mcap={t.mcap} />
+                      <Liquidity usd={t.liquidityUsd} mcap={t.mcap} pools={t.poolCount} />
                     </td>
                     {/* Buys/sells over holders. */}
                     <td className="px-1.5 py-2 text-right">

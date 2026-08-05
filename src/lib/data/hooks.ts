@@ -530,6 +530,18 @@ export interface RowEnrichment {
   vol5m?: number;
   vol1h?: number;
   vol6h?: number;
+  /**
+   * Totals summed over EVERY pool the token trades in, across every DEX.
+   *
+   * These come from the per-token pools endpoint, which returns all venues —
+   * unlike the network-wide pool list, which is paginated by volume and so only
+   * ever sees a token's busiest pool or two. That gap is why a token with a
+   * $24k Uniswap pool and a $200k DYORswap pool reported $24k: the second venue
+   * was never in the list the total was computed from.
+   */
+  vol24h?: number;
+  liquidityUsd?: number;
+  poolCount?: number;
   buys24h?: number;
   sells24h?: number;
   priceChange24h?: number;
@@ -580,7 +592,16 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
       // Two changes. Results accumulate rather than being replaced, so coverage
       // only grows; and rows that have never been enriched go FIRST, so the
       // list fills out over a few cycles instead of re-asking the same twelve.
-      const incomplete = rows.filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0);
+      const incomplete = rows.filter(
+        (t) =>
+          !t.dexName ||
+          !t.holders ||
+          t.ageMinutes < 0 ||
+          // A row whose totals came from the network pool list has only ever
+          // seen its busiest pool, so it needs the all-venue pass regardless of
+          // how complete it otherwise looks.
+          t.poolCount == null,
+      );
       const unseen = incomplete.filter((t) => !store[t.address]);
       const seen = incomplete.filter((t) => store[t.address]).sort((a, b) => b.vol24h - a.vol24h);
 
@@ -614,6 +635,11 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
               e.vol5m = pools.reduce((s, p) => s + p.vol5m, 0);
               e.vol1h = pools.reduce((s, p) => s + p.vol1h, 0);
               e.vol6h = pools.reduce((s, p) => s + p.vol6h, 0);
+              // 24h volume and liquidity were the two totals this loop never
+              // computed, even though it already had every pool in hand.
+              e.vol24h = pools.reduce((s, p) => s + p.vol24h, 0);
+              e.liquidityUsd = pools.reduce((s, p) => s + p.reserveUsd, 0);
+              e.poolCount = pools.length;
               e.buys24h = pools.reduce((s, p) => s + p.buys24h, 0);
               e.sells24h = pools.reduce((s, p) => s + p.sells24h, 0);
               e.priceChange24h = top.priceChange24h;
@@ -1241,6 +1267,29 @@ export interface TokenDetailData {
   pool: string | null;
 }
 
+/**
+ * Last pool address we successfully saw for a token, per chain.
+ *
+ * The pool is part of the query key for BOTH the candle chart and the activity
+ * feed. `fetchTokenPools` is a network call, so one failed or empty cycle used
+ * to hand back `pool: null` — a different key, pointing at a different (empty)
+ * cache entry. The next cycle succeeded and the key flipped back. That is the
+ * whole "activity shows up, disappears, comes back" behaviour: the panels were
+ * alternating between two cache entries, one of which had never been filled.
+ *
+ * A pool address doesn't stop existing because a request timed out, so once we
+ * know it we keep it. Only a genuinely newer pool replaces it.
+ */
+const lastKnownPool = new Map<string, string>();
+
+export function rememberPool(chainKey: ChainKey, address: string, pool: string | null) {
+  if (pool) lastKnownPool.set(`${chainKey}:${address.toLowerCase()}`, pool);
+}
+
+function recallPool(chainKey: ChainKey, address: string): string | null {
+  return lastKnownPool.get(`${chainKey}:${address.toLowerCase()}`) ?? null;
+}
+
 async function loadTokenCore(
   chain: ChainConfig,
   chainKey: ChainKey,
@@ -1330,13 +1379,50 @@ async function loadTokenCore(
       token.launchpadName = launchpadPool.dexName;
     }
     void dexPool;
+
+    // Liquidity and volume are sums over EVERY venue, not the deepest one.
+    // `market` above describes a single pool, so a token split across a Uniswap
+    // pool and a native DEX reported only one side of its real depth. `pools`
+    // already holds all of them here — there was nothing left to fetch, the
+    // totals just were never added up.
+    const reserves = pools.reduce((s, p) => s + p.reserveUsd, 0);
+    if (reserves > 0) token.liquidityUsd = Math.max(reserves, token.liquidityUsd ?? 0);
+    token.poolCount = pools.length;
+    const sum = (pick: (p: (typeof pools)[number]) => number) =>
+      pools.reduce((s, p) => s + pick(p), 0);
+    token.vol24h = Math.max(
+      token.vol24h ?? 0,
+      sum((p) => p.vol24h),
+    );
+    token.vol6h = Math.max(
+      token.vol6h ?? 0,
+      sum((p) => p.vol6h),
+    );
+    token.vol1h = Math.max(
+      token.vol1h ?? 0,
+      sum((p) => p.vol1h),
+    );
+    token.vol5m = Math.max(
+      token.vol5m ?? 0,
+      sum((p) => p.vol5m),
+    );
+    token.buys24h = Math.max(
+      token.buys24h ?? 0,
+      sum((p) => p.buys24h),
+    );
+    token.sells24h = Math.max(
+      token.sells24h ?? 0,
+      sum((p) => p.sells24h),
+    );
   }
   // DYOR is authoritative for curve progress + graduation on all three chains.
   if (dyor) applyDyor(token, dyor);
 
   // 4. Done — holders and trades load separately so this resolves as early as
   //    possible and the page can paint.
-  return { token, holders: [], trades: [], pool: pools[0]?.pool ?? null };
+  const pool = pools[0]?.pool ?? recallPool(chainKey, addr);
+  rememberPool(chainKey, addr, pool);
+  return { token, holders: [], trades: [], pool };
 }
 
 /**
@@ -1361,9 +1447,11 @@ export function useTokenDetail(address: string) {
     initialData: () => {
       const cached = readCache<TokenRow[]>(`tokens.${chainKey}`, 60 * 60_000);
       const row = cached?.find((t) => t.address.toLowerCase() === addr);
-      return row
-        ? { token: row, holders: [], trades: [], pool: row.primaryPool ?? null }
-        : undefined;
+      if (!row) return undefined;
+      // Seed the pool memo from the cached row too, so the very first core load
+      // can't drop a pool the terminal list already knew about.
+      rememberPool(chainKey, addr, row.primaryPool ?? null);
+      return { token: row, holders: [], trades: [], pool: row.primaryPool ?? null };
     },
     initialDataUpdatedAt: 0,
     queryFn: () => loadTokenCore(chain, chainKey, address),
@@ -1378,29 +1466,51 @@ export function useTokenActivity(
 ) {
   const { chain, chainKey } = useChain();
   const addr = address.toLowerCase();
+  // The pool is deliberately NOT part of the key. It arrives a moment after the
+  // core query resolves, and keying on it meant the panels were pointed at a
+  // fresh, empty cache entry the instant it landed — then back at the filled one
+  // if a later refetch lost it. The token address already identifies this query;
+  // the pool is just an extra source the fetcher uses when it has one.
   return useQuery<{ holders: TokenHolder[]; trades: TradeEvent[] }>({
-    queryKey: ["token-activity", chainKey, addr, pool ?? ""],
+    queryKey: ["token-activity", chainKey, addr],
     enabled: Boolean(token),
     refetchInterval: REFRESH,
+    staleTime: 15_000,
+    retry: 1,
+    // Deliberately NO placeholderData here. With the pool out of the key, the
+    // key only changes when you open a different token — and carrying the last
+    // token's trades across that would be worse than a blank card. A refetch of
+    // the same key already keeps its data on screen by default, which is the
+    // case that was actually broken.
     queryFn: async () => {
       const decimals = token?.decimals ?? 18;
+      // null means "this source failed", [] means "this source has nothing".
+      // Collapsing both to [] was the second half of the disappearing act: a
+      // failed explorer call got cached as a perfectly good empty answer, and
+      // the card sat on it until the next refetch happened to succeed.
       const [holders, transfers, dexTrades] = await Promise.all([
         // Same shared lookup the distribution columns use, so opening a token
         // from the table doesn't re-ask who holds it.
         getTokenHolders(chainKey, chain, addr, decimals, token?.totalSupply ?? 0, 10).catch(
-          () => [],
+          () => null,
         ),
-        fetchTokenTransfers(chain, addr, token?.symbol ?? "?", token?.price ?? 0).catch(
-          () => [] as TradeEvent[],
-        ),
+        fetchTokenTransfers(chain, addr, token?.symbol ?? "?", token?.price ?? 0).catch(() => null),
         pool
-          ? fetchPoolTrades(chain, pool, token?.symbol ?? "?").catch(() => [] as TradeEvent[])
+          ? fetchPoolTrades(chain, pool, token?.symbol ?? "?").catch(() => null)
           : Promise.resolve([] as TradeEvent[]),
       ]);
-      const trades = dexTrades.length
+
+      // Everything that could have answered, failed. Throwing hands this to the
+      // retry and leaves the previous data in place, rather than overwriting a
+      // real feed with an empty one.
+      if (holders === null && transfers === null && dexTrades === null) {
+        throw new Error("No activity source responded");
+      }
+
+      const trades = dexTrades?.length
         ? dexTrades.map((t) => ({ ...t, tokenAddress: addr }))
-        : transfers;
-      return { holders, trades };
+        : (transfers ?? []);
+      return { holders: holders ?? [], trades };
     },
   });
 }
@@ -1414,6 +1524,13 @@ export function useTokenCandles(pool: string | null, timeframe: ChartTimeframe) 
     queryKey: ["candles", chainKey, pool, timeframe],
     enabled: Boolean(pool),
     refetchInterval: timeframe === "minute" ? REFRESH : 60_000,
+    // Switching 1m/1h/1d is a new key, and the chart emptied itself for the
+    // length of the request every time you touched the timeframe. Hold the old
+    // candles ONLY while the pool is unchanged — a different pool is a different
+    // token, and showing its chart under this token's header would be a lie.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery && prevQuery.queryKey[2] === pool ? prev : undefined,
+    retry: 1,
     queryFn: () => (pool ? fetchOhlcvCandles(chain, pool, timeframe) : Promise.resolve([])),
   });
 }

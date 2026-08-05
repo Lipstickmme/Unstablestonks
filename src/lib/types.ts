@@ -71,6 +71,8 @@ export interface TokenRow {
   dexPaid?: boolean;
   /** Deepest pool this token trades in — the handle we use to find its DEX factory. */
   primaryPool?: string;
+  /** How many pools the liquidity and volume totals are summed over. */
+  poolCount?: number;
 }
 
 export interface TradeEvent {

@@ -214,7 +214,12 @@ function TokenDetail() {
               </div>
             </section>
 
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_360px]">
+            {/* items-start, not the default stretch. Stretching gave each column
+                a definite height equal to the taller one, so any h-full child
+                grew to that height and ran off the bottom of the grid — which
+                is how the activity card ended up overlapping the footer. Each
+                column should be exactly as tall as what's in it. */}
+            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[1fr_360px]">
               <div className="space-y-4">
                 {/* Chart */}
                 <section className="card-surface fade-up overflow-hidden">

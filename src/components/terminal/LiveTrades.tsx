@@ -1,5 +1,11 @@
-import { useMemo } from "react";
-import { ArrowDownRight, ArrowUpRight, ExternalLink } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+} from "lucide-react";
 import { formatUSD, shortAddr } from "@/lib/format";
 import type { TradeEvent } from "@/lib/types";
 import { profileTraders, type SizeTier } from "@/lib/traders";
@@ -34,7 +40,14 @@ function age(ms: number): string {
  * `token` and `totalSupply` are optional: on the chain-wide feed a row can be
  * any token, so the supply figure only appears on a single-token page where
  * "share of supply" actually means something.
+ *
+ * PAGED, not scrolled. A feed that grows without limit made this card as tall as
+ * whatever the window happened to hold, which on the token page left a long
+ * empty run below the rail and pushed the card past the footer. A page at a time
+ * gives the section a height that barely moves no matter how busy the chain is.
  */
+const PAGE_SIZE = 10;
+
 export function LiveTrades({
   trades,
   loading,
@@ -50,17 +63,35 @@ export function LiveTrades({
   totalSupply?: number;
 }) {
   const { chain } = useChain();
+  const [page, setPage] = useState(0);
 
+  // Profiles are derived from the WHOLE window, not the page: "12 swaps, net
+  // buying" is a claim about the trader, and recomputing it per page would make
+  // the same wallet read differently depending on where you happened to be.
   const profiles = useMemo(() => profileTraders(trades), [trades]);
+
+  const pageCount = Math.max(1, Math.ceil(trades.length / PAGE_SIZE));
+  // Clamped rather than reset. The feed refetches every few seconds, and an
+  // effect that snapped back to page 1 on each refresh would make the control
+  // unusable — you'd be thrown to the top mid-read. Clamping only moves you
+  // when the page you're on stops existing.
+  const safePage = Math.min(page, pageCount - 1);
+  const visible = useMemo(
+    () => trades.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE),
+    [trades, safePage],
+  );
+
+  // Balances are the one thing here that costs a request, so only the wallets
+  // actually on screen get looked up instead of every wallet in the window.
   const wallets = useMemo(
-    () => [...new Set(trades.map((t) => (t.wallet || "").toLowerCase()).filter(Boolean))],
-    [trades],
+    () => [...new Set(visible.map((t) => (t.wallet || "").toLowerCase()).filter(Boolean))],
+    [visible],
   );
   const holdingsQ = useTraderHoldings(wallets, token, decimals, totalSupply);
   const holdings = holdingsQ.data;
 
   return (
-    <section className="card-surface flex h-full flex-col overflow-hidden">
+    <section className="card-surface flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="live-dot" />
@@ -69,14 +100,14 @@ export function LiveTrades({
         <span className="font-mono text-[10px] text-muted-foreground">on-chain</span>
       </div>
 
-      <div className="max-h-[420px] flex-1 overflow-y-auto">
+      <div>
         {trades.length === 0 ? (
-          <div className="px-4 py-12 text-center text-xs text-muted-foreground">
+          <div className="px-4 py-8 text-center text-xs text-muted-foreground">
             {loading ? "Loading on-chain activity…" : "No recent on-chain activity indexed yet."}
           </div>
         ) : (
           <ul>
-            {trades.map((t) => {
+            {visible.map((t) => {
               const buy = t.side === "buy";
               const key = (t.wallet || "").toLowerCase();
               const p = profiles.get(key);
@@ -186,7 +217,65 @@ export function LiveTrades({
           </ul>
         )}
       </div>
+
+      {/* Only when there is more than one page — a single-page feed shouldn't
+          grow a control that does nothing. */}
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between border-t border-border px-3 py-2">
+          <span className="text-[10px] text-muted-foreground">
+            <span className="num text-foreground">{safePage * PAGE_SIZE + 1}</span>–
+            <span className="num text-foreground">
+              {Math.min(trades.length, (safePage + 1) * PAGE_SIZE)}
+            </span>{" "}
+            of <span className="num text-foreground">{trades.length}</span> trades
+          </span>
+          <div className="flex items-center gap-1">
+            <PageBtn
+              label="Newer trades"
+              disabled={safePage === 0}
+              onClick={() => setPage(safePage - 1)}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </PageBtn>
+            <span className="num px-1 text-[10px] text-muted-foreground">
+              {safePage + 1}/{pageCount}
+            </span>
+            <PageBtn
+              label="Older trades"
+              disabled={safePage >= pageCount - 1}
+              onClick={() => setPage(safePage + 1)}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </PageBtn>
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+function PageBtn({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="tap grid h-6 w-6 place-items-center rounded-md border border-border text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:border-border disabled:hover:text-muted-foreground"
+    >
+      {children}
+    </button>
   );
 }
 

@@ -80,17 +80,34 @@ function Terminal() {
       if (d) applyDyor(next, d);
       if (h?.ok) next.socialHeat = h.heat;
       if (e) {
-        // Backfill only what the row is actually missing — never overwrite live
-        // pool data with the enrichment pass.
+        // Identity fields: backfill only, never overwrite live pool data.
         if (e.holders && !next.holders) next.holders = e.holders;
         if (e.dexName && !next.dexName) next.dexName = e.dexName;
         if (e.launchpadName && !next.launchpadName) next.launchpadName = e.launchpadName;
         if (e.ageMinutes != null && next.ageMinutes < 0) next.ageMinutes = e.ageMinutes;
-        if (e.vol5m && !next.vol5m) next.vol5m = e.vol5m;
-        if (e.vol1h && !next.vol1h) next.vol1h = e.vol1h;
-        if (e.vol6h && !next.vol6h) next.vol6h = e.vol6h;
-        if (e.buys24h && !next.buys24h) next.buys24h = e.buys24h;
-        if (e.sells24h && !next.sells24h) next.sells24h = e.sells24h;
+
+        // AGGREGATES are different, and treating them like the rest was the
+        // second half of the liquidity bug. The enrichment pass sums across
+        // EVERY pool a token trades in; the row it is merging into was built
+        // from the network-wide pool list, which is paginated by volume and so
+        // usually knows one venue. Backfilling only when empty meant a row that
+        // already had a single pool's $24k never received the $200k total.
+        //
+        // A sum over all venues is strictly more complete than a sum over some
+        // of them, so the larger figure wins. It can only ever be the fuller
+        // one — a subset cannot exceed its superset.
+        const fuller = (cur: number | undefined, add: number | undefined) =>
+          add != null && add > (cur ?? 0) ? add : cur;
+
+        next.vol5m = fuller(next.vol5m, e.vol5m) ?? next.vol5m;
+        next.vol1h = fuller(next.vol1h, e.vol1h) ?? next.vol1h;
+        next.vol6h = fuller(next.vol6h, e.vol6h) ?? next.vol6h;
+        next.vol24h = fuller(next.vol24h, e.vol24h) ?? next.vol24h;
+        next.buys24h = fuller(next.buys24h, e.buys24h) ?? next.buys24h;
+        next.sells24h = fuller(next.sells24h, e.sells24h) ?? next.sells24h;
+        next.liquidityUsd = fuller(next.liquidityUsd, e.liquidityUsd);
+        if (e.poolCount != null) next.poolCount = e.poolCount;
+
         if (e.sparkline && !next.sparkline) {
           next.sparkline = e.sparkline;
           next.priceChange24h = e.priceChange24h ?? next.priceChange24h;
