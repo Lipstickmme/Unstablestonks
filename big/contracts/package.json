@@ -1,0 +1,29 @@
+{
+  "name": "big-market-contracts",
+  "version": "1.0.0",
+  "description": "BIG Market Smart Contracts",
+  "scripts": {
+    "compile": "hardhat compile",
+    "compile:abi": "hardhat compile && hardhat run scripts/copy-abi.ts",
+    "deploy": "hardhat run scripts/deploy.ts",
+    "upgrade": "hardhat run scripts/upgrade.ts",
+    "upgrade-v3": "hardhat run scripts/upgrade-v3.ts",
+    "upgrade-v4": "hardhat run scripts/upgrade-v4.ts",
+    "authorize": "hardhat run scripts/authorize.ts",
+    "test": "hardhat test",
+    "upgrade-v5": "hardhat run scripts/upgrade-v5.ts",
+    "deploy:rugrush": "hardhat run scripts/deploy-rugrush.ts",
+    "rugrush:operate": "hardhat run scripts/rugrush-operator.ts"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/hardhat-upgrades": "^3.0.0",
+    "hardhat": "^2.19.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts-upgradeable": "~5.3.0",
+    "dotenv": "^17.2.3"
+  }
+}

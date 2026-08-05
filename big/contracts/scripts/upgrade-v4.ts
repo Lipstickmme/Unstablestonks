@@ -1,0 +1,57 @@
+import { ethers, upgrades } from "hardhat";
+import * as fs from "fs";
+import * as path from "path";
+
+async function main() {
+  const network = await ethers.provider.getNetwork();
+  const networkName =
+    network.chainId === 137n ? "polygon" : network.chainId === 80002n ? "amoy" : `chain-${network.chainId}`;
+  const deploymentPath = path.join(__dirname, "../deployments", `${networkName}.json`);
+
+  if (!fs.existsSync(deploymentPath)) {
+    throw new Error(`Deployment file not found: ${deploymentPath}. Deploy first with scripts/deploy.ts`);
+  }
+
+  const deploymentInfo = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
+  const proxyAddress = deploymentInfo.proxyAddress;
+  if (!proxyAddress) throw new Error("Proxy address not found");
+
+  console.log("Upgrading to BigMarketV4...");
+  console.log("Proxy:", proxyAddress);
+
+  const BigMarketV4 = await ethers.getContractFactory("BigMarketV4");
+  const upgraded = await upgrades.upgradeProxy(proxyAddress, BigMarketV4, {
+    timeout: 600000,
+    pollingInterval: 5000,
+  });
+  await upgraded.waitForDeployment();
+  const newImpl = await upgrades.erc1967.getImplementationAddress(proxyAddress);
+
+  const updated = {
+    ...deploymentInfo,
+    implementationAddress: newImpl,
+    previousImplementationAddress: deploymentInfo.implementationAddress,
+    upgradedAt: new Date().toISOString(),
+    version: "V4",
+  };
+  fs.writeFileSync(deploymentPath, JSON.stringify(updated, null, 2));
+
+  const artifactPath = path.join(__dirname, "../artifacts/contracts/BigMarketV4.sol/BigMarketV4.json");
+  if (fs.existsSync(artifactPath)) {
+    const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+    const frontendAbiPath = path.join(__dirname, "../../frontend/lib/abi.json");
+    fs.writeFileSync(frontendAbiPath, JSON.stringify(artifact.abi, null, 2));
+    console.log("ABI copied to frontend/lib/abi.json");
+  }
+
+  console.log("V4 implementation:", newImpl);
+  console.log("V4 adds: admins, delegated whitelist management, referral tracking, user/referral points.");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+

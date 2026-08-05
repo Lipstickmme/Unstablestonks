@@ -1,0 +1,15 @@
+node_modules/
+.env
+cache/
+artifacts/
+deployments/
+coverage/
+coverage.json
+typechain/
+typechain-types/
+
+# Hardhat files
+.hardhat/
+
+# RugRush operator seed store — plaintext server seeds for unrevealed rounds.
+deployments/rugrush-seeds.json

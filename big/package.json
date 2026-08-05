@@ -1,0 +1,26 @@
+{
+  "name": "big-market",
+  "version": "1.0.0",
+  "description": "BIG Market - Prediction Market Platform",
+  "private": true,
+  "workspaces": [
+    "contracts",
+    "frontend"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd contracts && npm install && cd ../frontend && npm install",
+    "compile": "cd contracts && npm run compile",
+    "deploy": "cd contracts && npm run deploy",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build"
+  },
+  "keywords": [
+    "prediction-market",
+    "blockchain",
+    "polygon",
+    "web3"
+  ],
+  "author": "",
+  "license": "MIT"
+}
+
