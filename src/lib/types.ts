@@ -99,6 +99,12 @@ export interface ChainStats {
   gasPriceGwei?: number;
   blockNumber?: number;
   updatedAt: Date;
+  /**
+   * When the network totals above were last actually read from a source. The
+   * counters are carried forward between successful reads, so this — not
+   * `updatedAt` — is how old those two figures really are.
+   */
+  countersAt?: Date;
   /** True when at least one figure came off a live source. */
   live: boolean;
   /** Which explorer hops produced the totals — for diagnosing an empty chain. */

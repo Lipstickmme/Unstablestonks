@@ -67,6 +67,58 @@ const MAX_TRADER_BALANCES = 24;
 const DYOR_ENABLED =
   (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DYOR_API === "1";
 
+/**
+ * Last known network counters, per chain.
+ *
+ * Total transactions and total addresses are monotonic on-chain counters. They
+ * only ever go up, and they do not become *unknown* because one scrape of the
+ * explorer timed out. But the stats query returns an object whether or not that
+ * scrape succeeded, so a failed cycle overwrote a real figure with `undefined`
+ * and the tile dropped to "—" until some later cycle happened to work. That is
+ * the flicker: the number wasn't wrong, it was being thrown away.
+ *
+ * Carrying the last reading forward is both steadier and closer to the truth
+ * than showing nothing — the real total is at least what we last saw. The
+ * reading's timestamp rides along so the tile can say how old it is rather than
+ * implying it was just measured.
+ */
+interface StickyCounters {
+  totalTransactions?: number;
+  totalAddresses?: number;
+  blockNumber?: number;
+  gasPriceGwei?: number;
+  at?: number;
+}
+
+const stickyCounters = new Map<ChainKey, StickyCounters>();
+
+/**
+ * For a counter that only moves forward. A missing reading keeps the old value;
+ * a reading that moved BACKWARDS is a partial or stale scrape rather than news,
+ * so it is ignored too.
+ */
+function forward(prev: number | undefined, fresh: number | undefined): number | undefined {
+  if (fresh == null || !(fresh > 0)) return prev;
+  if (prev != null && fresh < prev) return prev;
+  return fresh;
+}
+
+function mergeCounters(chainKey: ChainKey, fresh: StickyCounters): StickyCounters {
+  const prev = stickyCounters.get(chainKey) ?? {};
+  const gotTotals = fresh.totalTransactions != null || fresh.totalAddresses != null;
+  const next: StickyCounters = {
+    totalTransactions: forward(prev.totalTransactions, fresh.totalTransactions),
+    totalAddresses: forward(prev.totalAddresses, fresh.totalAddresses),
+    blockNumber: forward(prev.blockNumber, fresh.blockNumber),
+    // Gas genuinely moves both ways, so the newest reading always wins. It only
+    // falls back to the previous one when there is no reading at all.
+    gasPriceGwei: fresh.gasPriceGwei ?? prev.gasPriceGwei,
+    at: gotTotals ? Date.now() : prev.at,
+  };
+  stickyCounters.set(chainKey, next);
+  return next;
+}
+
 export function useChainStats() {
   const { chain, chainKey } = useChain();
   return useQuery<ChainStats>({
@@ -80,20 +132,29 @@ export function useChainStats() {
         // scrape of the Etherscan-style explorer (Stable). Applies to all chains.
         fetchExplorerStats({ data: { chain: chainKey } }).catch(() => null),
       ]);
+
+      const counters = mergeCounters(chainKey, {
+        totalTransactions: scan?.totalTransactions ?? explorer.totalTransactions,
+        totalAddresses: scan?.totalAddresses ?? explorer.totalAddresses,
+        blockNumber: health.ok ? health.blockNumber : scan?.blockNumber,
+        gasPriceGwei: health.ok
+          ? health.gasPriceGwei
+          : (explorer.gasPriceGwei ?? scan?.gasPriceGwei),
+      });
+
       return {
         vol24h: explorer.vol24h ?? 0,
         launches24h: explorer.launches24h ?? 0,
         trades24h: scan?.transactions24h ?? explorer.trades24h ?? 0,
-        totalTransactions: scan?.totalTransactions ?? explorer.totalTransactions,
-        totalAddresses: scan?.totalAddresses ?? explorer.totalAddresses,
+        totalTransactions: counters.totalTransactions,
+        totalAddresses: counters.totalAddresses,
         newAddresses24h: scan?.newAddresses24h,
         tokensTotal: scan?.tokensTotal,
         contractsTotal: scan?.contractsTotal,
-        gasPriceGwei: health.ok
-          ? health.gasPriceGwei
-          : (explorer.gasPriceGwei ?? scan?.gasPriceGwei),
-        blockNumber: health.ok ? health.blockNumber : scan?.blockNumber,
+        gasPriceGwei: counters.gasPriceGwei,
+        blockNumber: counters.blockNumber,
         updatedAt: new Date(),
+        countersAt: counters.at ? new Date(counters.at) : undefined,
         live: Boolean(explorer.live) || health.ok || Boolean(scan?.ok),
         statSources: scan?.sources,
       };

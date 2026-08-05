@@ -20,7 +20,13 @@ interface Tile {
   format: (n: number) => string;
   change?: number;
   changeNote?: string;
+  /** Explains the figure on hover — used to date a carried-forward counter. */
+  hint?: string;
+  /** Shown under the number when the reading is older than the page. */
+  note?: string;
 }
+
+const clock = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
   const { chain } = useChain();
@@ -28,9 +34,21 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
   const gwei = (n: number) => `${n.toFixed(3)} gwei`;
   const pick = (n?: number) => (n && n > 0 ? n : undefined);
 
+  // The network totals are monotonic counters held across refreshes (see
+  // mergeCounters), so they tick up in place instead of vanishing whenever the
+  // explorer scrape misses a cycle. When a reading does go stale, say so under
+  // the number rather than letting it pass as current.
+  const counterAgeMs = stats?.countersAt ? Date.now() - stats.countersAt.getTime() : undefined;
+  const counterStale = counterAgeMs != null && counterAgeMs > 120_000;
+  const counterHint = stats?.countersAt
+    ? `Network counter, last read from the explorer at ${clock(stats.countersAt)}. Held between reads — it only moves forward.`
+    : "Network counter — no explorer read has succeeded yet.";
+  const counterNote =
+    counterStale && stats?.countersAt ? `as of ${clock(stats.countersAt)}` : undefined;
+
   // 24h volume is summed from live pool data; its change is the current 6h
   // run-rate vs the 24h average. Totals come from the explorer and show "—"
-  // when unavailable — never a fabricated value.
+  // only when no read has ever succeeded — never a fabricated value.
   const tiles: Tile[] = [
     {
       label: "24h volume",
@@ -39,8 +57,20 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
       change: vol24hChange,
       changeNote: "6h run-rate vs 24h avg",
     },
-    { label: "Total transactions", value: pick(stats?.totalTransactions), format: formatNum },
-    { label: "Total addresses", value: pick(stats?.totalAddresses), format: formatNum },
+    {
+      label: "Total transactions",
+      value: pick(stats?.totalTransactions),
+      format: formatNum,
+      hint: counterHint,
+      note: counterNote,
+    },
+    {
+      label: "Total addresses",
+      value: pick(stats?.totalAddresses),
+      format: formatNum,
+      hint: counterHint,
+      note: counterNote,
+    },
     { label: "Gas price", value: pick(stats?.gasPriceGwei), format: gwei },
   ];
 
@@ -101,7 +131,7 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
         {tiles.map((t) => {
           const up = (t.change ?? 0) >= 0;
           return (
-            <div key={t.label} className="bg-surface p-4 sm:p-5">
+            <div key={t.label} className="bg-surface p-4 sm:p-5" title={t.hint}>
               <div className="text-xs text-muted-foreground">{t.label}</div>
               <div className="num mt-2 text-2xl font-light tracking-tight sm:text-3xl md:text-4xl">
                 {t.value == null ? (
@@ -116,6 +146,9 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
                   <AnimatedNumber value={t.value} format={t.format} />
                 )}
               </div>
+              {t.value != null && t.note && (
+                <div className="mt-1 text-[11px] text-muted-foreground">{t.note}</div>
+              )}
               {t.value != null && t.change != null && isFinite(t.change) && (
                 <div
                   className={`mt-1 flex items-center gap-1 text-[11px] ${up ? "text-bull" : "text-bear"}`}

@@ -461,7 +461,13 @@ export const fetchExplorerStats = createServerFn({ method: "GET" })
     const hit = cache.get(chain);
     if (hit && Date.now() - hit.ts < (hit.data.ok ? TTL_OK : TTL_FAIL)) return hit.data;
 
-    let stats = await viaBlockscout(BLOCKSCOUT_HOSTS[chain] ?? []);
+    // Guarded like every hop below it. Unguarded, a throw here rejected the
+    // whole server function, so a single unreachable Blockscout host discarded
+    // the CSV, HTML and JSON-API results that were never even attempted — the
+    // caller just saw null and the counters went blank.
+    let stats = await viaBlockscout(BLOCKSCOUT_HOSTS[chain] ?? []).catch(
+      () => ({ ok: false }) as ExplorerStats,
+    );
     if (stats.ok) stats.sources = ["blockscout"];
 
     const complete = (s: ExplorerStats) => Boolean(s.totalTransactions && s.totalAddresses);
