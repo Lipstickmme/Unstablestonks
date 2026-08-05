@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Flame, Users, Coins, MessageCircle, Pause, Play } from "lucide-react";
+import {
+  Flame,
+  Users,
+  Coins,
+  MessageCircle,
+  Pause,
+  Play,
+  ChevronLeft,
+  ChevronRight,
+  RotateCcw,
+} from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatNum, formatUSD } from "@/lib/format";
 import type { TokenRow } from "@/lib/types";
@@ -71,6 +81,12 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
     1,
     Math.min(PAGES, Math.ceil(Math.max(...cards.map((c) => c.items.length), 0) / PER_PAGE)),
   );
+
+  /** Move by one page, wrapping. Manual control always wins over the timer. */
+  const step = (dir: 1 | -1) => {
+    setPage((p) => (p + dir + pageCount) % pageCount);
+    setPaused(true);
+  };
 
   useEffect(() => {
     if (paused || pageCount < 2) return;
@@ -160,9 +176,41 @@ export function HotSignals({ tokens }: { tokens: TokenRow[] }) {
         })}
       </div>
 
-      {/* One control strip for all four cards, since they turn together. */}
+      {/* One control strip for all four cards, since they turn together.
+          Stepping manually pauses the rotation — otherwise the timer would drag
+          you off the page you just chose, a second or two after you chose it. */}
       {pageCount > 1 && (
         <div className="mt-2 flex items-center justify-center gap-2">
+          <button
+            onClick={() => step(-1)}
+            className="tap rounded-full border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+            aria-label="Previous four"
+            title="Previous four"
+          >
+            <ChevronLeft className="h-3 w-3" />
+          </button>
+          <button
+            onClick={() => step(1)}
+            className="tap rounded-full border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+            aria-label="Next four"
+            title="Next four"
+          >
+            <ChevronRight className="h-3 w-3" />
+          </button>
+          {/* Straight back to the top four from anywhere in the run. */}
+          {page !== 0 && (
+            <button
+              onClick={() => {
+                setPage(0);
+                setPaused(true);
+              }}
+              className="tap rounded-full border border-border p-1 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+              aria-label="Back to the top four"
+              title="Back to top 4"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+          )}
           <button
             onClick={() => setPaused((p) => !p)}
             className="tap rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground"

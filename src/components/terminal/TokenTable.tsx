@@ -40,6 +40,7 @@ import {
   Wallet,
   Database,
   Circle,
+  Droplets,
 } from "lucide-react";
 
 type SortKey =
@@ -51,7 +52,8 @@ type SortKey =
   | "graduationPct"
   | "socialHeat"
   | "priceChange24h"
-  | "holders";
+  | "holders"
+  | "liquidityUsd";
 type Filter = "all" | "new" | "trending" | "portfolio" | "bubbles";
 
 const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
@@ -158,6 +160,49 @@ function VenueCell({ t }: { t: TokenRow }) {
         fallback={<span className="truncate">{venue}</span>}
       />
       {logo && <span className="sr-only">{venue}</span>}
+    </span>
+  );
+}
+
+/**
+ * Pool liquidity, with its ratio to market cap underneath.
+ *
+ * The absolute figure alone doesn't say much — $40k of liquidity is deep for a
+ * $200k token and nothing for a $40M one. The ratio is what tells you whether a
+ * position can actually be exited, so it sits right below the number and turns
+ * amber when it drops under 2%: at that point the market cap is mostly a price
+ * on paper.
+ *
+ * Only DEX sources know this (GeckoTerminal pool reserves, DexScreener). A token
+ * no pricing source covers has no liquidity figure to show — which is not zero
+ * liquidity, so it reads as "—".
+ */
+function Liquidity({ usd, mcap }: { usd?: number; mcap: number }) {
+  if (!usd || usd <= 0) {
+    return (
+      <span className="num text-xs text-muted-foreground" title="No indexed pool reserves">
+        —
+      </span>
+    );
+  }
+  const ratio = mcap > 0 ? (usd / mcap) * 100 : undefined;
+  const thin = ratio != null && ratio < 2;
+  return (
+    <span
+      title={
+        ratio != null
+          ? `${formatUSD(usd)} of pool liquidity — ${ratio.toFixed(1)}% of market cap`
+          : `${formatUSD(usd)} of pool liquidity`
+      }
+    >
+      <span className="num block text-xs leading-tight">{formatUSD(usd)}</span>
+      {ratio != null && (
+        <span
+          className={`num block text-[10px] leading-tight ${thin ? "text-warn" : "text-muted-foreground"}`}
+        >
+          {ratio < 0.1 ? "<0.1" : ratio.toFixed(1)}% of MC
+        </span>
+      )}
     </span>
   );
 }
@@ -469,7 +514,8 @@ export function TokenTable({
           t.address.toLowerCase().includes(q),
       );
     }
-    const val = (t: TokenRow): number => (sort === "age" ? t.ageMinutes : t[sort]);
+    const val = (t: TokenRow): number =>
+      sort === "age" ? t.ageMinutes : sort === "liquidityUsd" ? (t.liquidityUsd ?? 0) : t[sort];
     return [...r].sort((a, b) => {
       const av = val(a);
       const bv = val(b);
@@ -578,7 +624,7 @@ export function TokenTable({
         <PortfolioPanel tokens={tokens} trades={trades ?? []} loading={loading} />
       ) : (
         <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[840px] text-sm">
             <thead>
               <tr className="border-b border-border bg-surface-elevated/40 text-left">
                 <th className="sticky left-0 z-20 w-[150px] bg-surface-elevated px-3 py-2 sm:w-[168px]">
@@ -599,6 +645,14 @@ export function TokenTable({
                     <span className="text-[10px] text-muted-foreground/40">/</span>
                     <H k="vol24h" label="24h volume" icon={<>VOL</>} />
                   </div>
+                </th>
+                <th className="px-1.5 py-2 text-right">
+                  <H
+                    k="liquidityUsd"
+                    label="Pool liquidity — what the token can actually be traded against"
+                    icon={<Droplets className="h-3.5 w-3.5" />}
+                    right
+                  />
                 </th>
                 <th className="px-1.5 py-2 text-right">
                   <div className="flex items-center justify-end gap-1.5">
@@ -654,7 +708,7 @@ export function TokenTable({
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-16 text-center text-sm text-muted-foreground">
+                  <td colSpan={11} className="px-4 py-16 text-center text-sm text-muted-foreground">
                     {watchOnly
                       ? "Your watchlist is empty. Tap the ☆ on any token to add it."
                       : loading
@@ -768,6 +822,9 @@ export function TokenTable({
                       <div className="num text-[11px] leading-tight text-muted-foreground">
                         {usdOrDash(t.vol24h)}
                       </div>
+                    </td>
+                    <td className="px-1.5 py-2 text-right">
+                      <Liquidity usd={t.liquidityUsd} mcap={t.mcap} />
                     </td>
                     {/* Buys/sells over holders. */}
                     <td className="px-1.5 py-2 text-right">

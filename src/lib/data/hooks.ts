@@ -542,33 +542,52 @@ export interface RowEnrichment {
  * cells). For the top rows by 24h volume we pull their own pools + token-info
  * and fill those gaps. Bounded and staggered to respect the free rate limit.
  */
+const enrichStore = new Map<ChainKey, Record<string, RowEnrichment>>();
+
+/** Rows enriched per cycle. Two GeckoTerminal calls each, so this is the cost. */
+const ENRICH_BATCH = 12;
+
 export function useRowEnrichment(tokens: TokenRow[] | undefined) {
   const { chain, chainKey } = useChain();
-  const targets = (tokens ?? [])
-    .filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0)
-    .sort((a, b) => b.vol24h - a.vol24h)
-    .slice(0, 12)
-    .map((t) => t.address);
-  // Sorted, so the key identifies the SET rather than the order. The token list
-  // reorders on every refresh as volumes tick, and an order-dependent key made a
-  // new cache entry each time — which is why whale watch and the bundle column
-  // blinked out and refilled every thirty seconds. Same members, same key.
-  const key = [...targets].sort().join(",");
+  const rows = tokens ?? [];
+
   return useQuery<Record<string, RowEnrichment>>({
-    queryKey: ["row-enrichment", chainKey, key],
-    // Keep the previous result while a new key resolves. Every one of these
-    // queries is keyed on a list DERIVED from the token table — the top eight by
-    // volume, the twelve busiest rows — and that list reorders on almost every
-    // refresh. A new key means a new cache entry, which starts empty, so the
-    // panel blanked for a moment on each reorder and then filled back in. This
-    // is exactly what placeholderData is for.
-    placeholderData: keepPreviousData,
-    enabled: targets.length > 0,
+    // Deliberately STABLE. This used to be keyed on the twelve addresses being
+    // enriched, which meant a different key — and a fresh, empty cache entry —
+    // every time the set changed. Now the query owns an accumulating store and
+    // the key never churns.
+    queryKey: ["row-enrichment", chainKey],
+    enabled: rows.length > 0,
     staleTime: ENRICH_REFRESH,
     refetchInterval: ENRICH_REFRESH,
     queryFn: async () => {
-      const out: Record<string, RowEnrichment> = {};
+      const store = enrichStore.get(chainKey) ?? {};
       const now = Date.now();
+
+      // WHY SOME ROWS HAD EVERYTHING AND OTHERS NOTHING.
+      //
+      // Holders, venue, age, the 5m/1h/6h volumes and the sparkline all arrive
+      // from THIS pass — two calls per token, filling every one of those fields
+      // together. So a row either has the whole set or none of it, which is
+      // exactly the pattern of "tokens with holders have more complete data".
+      // Holders don't cause the rest; they're delivered in the same envelope.
+      //
+      // And the pass took the top twelve BY VOLUME every cycle. The same twelve
+      // rows won every time, so a quiet token was never once enriched — it sat
+      // at the bottom of that sort forever. Which is the real answer: it wasn't
+      // that some tokens lacked data, it was that nobody ever asked about them.
+      //
+      // Two changes. Results accumulate rather than being replaced, so coverage
+      // only grows; and rows that have never been enriched go FIRST, so the
+      // list fills out over a few cycles instead of re-asking the same twelve.
+      const incomplete = rows.filter((t) => !t.dexName || !t.holders || t.ageMinutes < 0);
+      const unseen = incomplete.filter((t) => !store[t.address]);
+      const seen = incomplete.filter((t) => store[t.address]).sort((a, b) => b.vol24h - a.vol24h);
+
+      const targets = [...unseen, ...seen].slice(0, ENRICH_BATCH).map((t) => t.address);
+      if (!targets.length) return { ...store };
+
+      const out: Record<string, RowEnrichment> = {};
       for (let i = 0; i < targets.length; i += 3) {
         const batch = targets.slice(i, i + 3);
         await Promise.all(
@@ -604,7 +623,10 @@ export function useRowEnrichment(tokens: TokenRow[] | undefined) {
           }),
         );
       }
-      return out;
+
+      const merged = { ...store, ...out };
+      enrichStore.set(chainKey, merged);
+      return merged;
     },
   });
 }
