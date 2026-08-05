@@ -40,8 +40,46 @@ interface DsOrder {
 const cache = new Map<string, { ts: number; data: DexPaidStatus }>();
 const TTL = 10 * 60_000; // paid status changes rarely
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Discovering the DexScreener chain slug instead of being told it.
+//
+// This is why the paid checker never returned anything. The orders endpoint is
+// /orders/v1/{chainSlug}/{token}, and `dexscreenerSlug` is unset for all three
+// chains — nobody knew what DexScreener calls them, so the function returned
+// "unsupported" on its first line and no request was ever made. The column read
+// as "not indexed" whether or not that was true.
+//
+// DexScreener will tell us. /latest/dex/tokens/{address} takes a bare token
+// address with no chain at all, and every pair it returns carries its own
+// `chainId` — which IS the slug the orders endpoint wants. So one lookup either
+// yields the slug or proves DexScreener has never seen the chain. Learned once
+// per chain and cached, since it can only change if DexScreener adds support,
+// and a reload picks that up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const learnedSlugs = new Map<string, string | null>();
+
+async function resolveSlug(cfg: ChainConfig, address: string): Promise<string | null> {
+  if (cfg.dexscreenerSlug) return cfg.dexscreenerSlug;
+
+  const known = learnedSlugs.get(cfg.key);
+  if (known !== undefined) return known;
+
+  const body = await proxiedFetchJson<{ pairs?: DsPair[] | null }>(
+    `https://api.dexscreener.com/latest/dex/tokens/${address}`,
+    { timeoutMs: 8_000, headers: { Accept: "application/json" } },
+  );
+  const slug = body?.pairs?.find((p) => p.chainId)?.chainId ?? null;
+
+  // Only remember a POSITIVE answer. A null here means this one token isn't
+  // indexed, which is not the same as the chain being absent — the next token
+  // asked gets a fresh chance.
+  if (slug) learnedSlugs.set(cfg.key, slug);
+  return slug;
+}
+
 export async function fetchDexPaid(cfg: ChainConfig, address: string): Promise<DexPaidStatus> {
-  const slug = cfg.dexscreenerSlug;
+  const slug = await resolveSlug(cfg, address);
   if (!slug) return { types: [], unsupported: true };
   if (unsupportedChains.has(slug)) return { types: [], unsupported: true };
 

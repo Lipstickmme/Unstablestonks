@@ -51,6 +51,22 @@ const RELAY_API = "https://api.relay.link";
  */
 export const RELAY_FEE_CLAIM_URL = "https://relay.link/claim-app-fees";
 
+/**
+ * A third rail worth watching: Circle Gateway.
+ *
+ * Gateway gives a wallet ONE unified USDC balance across chains and lets it be
+ * spent on any of them without a bridge step — Circle describes it as gas-free
+ * cross-chain USDC. For a terminal whose two newest chains use USDC or USDT as
+ * the gas asset, that is a better fit than either rail here: no burn-and-mint
+ * wait, no solver quote.
+ *
+ * NOT wired, deliberately. Arc mainnet (chain 5042) produces blocks and has USDC
+ * deployed, but it remains Circle's pre-release infrastructure rather than a
+ * public network, and Gateway's contract addresses for it aren't published. The
+ * moment they are, this is the rail to add — and availableRails already probes
+ * rather than assumes, so it slots in beside the other two.
+ */
+
 /** Relay uses the zero address for a chain's native currency. */
 export const NATIVE = "0x0000000000000000000000000000000000000000" as const;
 

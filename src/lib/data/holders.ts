@@ -29,9 +29,62 @@ const TRANSFER = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 
-/** Blocks to look back, and the slice size most public RPCs will serve. */
-const MAX_BLOCKS = 30_000n;
+// ─────────────────────────────────────────────────────────────────────────────
+// How far back to look — measured in TIME, not blocks.
+//
+// This is why the distribution columns stayed blank on Stable. A flat 30,000
+// blocks is a week of history on Ethereum and about three HOURS on Stable, which
+// finalises sub-second and is already past block 34,000,000. Robinhood is worse:
+// ~100ms blocks make 30,000 blocks fifty minutes. So a token that launched two
+// days ago had every one of its transfers outside the window, the scan found no
+// candidate addresses, and dev holding and top-10 reported nothing — on the
+// chains where the on-chain route is the ONLY route, because their explorers
+// don't serve a holders endpoint.
+//
+// The window is now derived from the chain's own measured block time, so it
+// means the same thing everywhere.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** History worth scanning. Longer than any launchpad token has been alive. */
+const LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000;
+/** Ceiling on the span, so a chain reporting a nonsense block time can't run away. */
+const MAX_BLOCKS = 2_000_000n;
+/** Floor, so a slow chain still gets a usable window. */
+const MIN_BLOCKS = 30_000n;
 const CHUNK = 10_000n;
+/** Chunks per scan. Bounds the work regardless of how wide the window is. */
+const MAX_CHUNKS = 6;
+
+/** Measured block time per chain, in ms. Cached — it doesn't change. */
+const blockTimeMs = new Map<ChainKey, number>();
+
+/**
+ * How many blocks ago LOOKBACK_MS was, on this chain.
+ *
+ * Sampled from two real blocks rather than assumed: two headers, once per
+ * session, and every consumer of the window gets it right on any chain.
+ */
+async function lookbackBlocks(key: ChainKey, head: bigint): Promise<bigint> {
+  let ms = blockTimeMs.get(key);
+  if (ms == null) {
+    try {
+      const client = getPublicClient(key);
+      const back = head > 5_000n ? head - 5_000n : 0n;
+      const [a, b] = await Promise.all([
+        client.getBlock({ blockNumber: back }),
+        client.getBlock({ blockNumber: head }),
+      ]);
+      const spanMs = Number(b.timestamp - a.timestamp) * 1000;
+      const blocks = Number(head - back);
+      ms = blocks > 0 && spanMs > 0 ? spanMs / blocks : 2_000;
+    } catch {
+      ms = 2_000; // conservative default; the clamps below keep it sane
+    }
+    blockTimeMs.set(key, ms);
+  }
+  const span = BigInt(Math.floor(LOOKBACK_MS / Math.max(ms, 1)));
+  return span > MAX_BLOCKS ? MAX_BLOCKS : span < MIN_BLOCKS ? MIN_BLOCKS : span;
+}
 
 /** Balance reads are batched into multicalls, but the batch is still bounded. */
 const MAX_CANDIDATES = 90;
@@ -78,11 +131,27 @@ async function candidateAddresses(
   } catch {
     return [];
   }
-  const floor = head > MAX_BLOCKS ? head - MAX_BLOCKS : 0n;
+  const span = await lookbackBlocks(key, head);
+  const floor = head > span ? head - span : 0n;
+
+  // The window can now be millions of blocks wide on a fast chain, so the
+  // chunk stride is sized to cover it in MAX_CHUNKS requests rather than
+  // walking it 10k at a time — which would be hundreds of calls. Nodes that
+  // refuse a wide range just fail that chunk and the next one is tried.
+  const stride = (() => {
+    const even = (head - floor) / BigInt(MAX_CHUNKS);
+    return even > CHUNK ? even : CHUNK;
+  })();
 
   // Newest slice first, so a range-limited node still yields the freshest set.
-  for (let to = head; to > floor && seen.size < MAX_CANDIDATES; to -= CHUNK) {
-    const from = to - CHUNK > floor ? to - CHUNK : floor;
+  let chunks = 0;
+  for (
+    let to = head;
+    to > floor && seen.size < MAX_CANDIDATES && chunks < MAX_CHUNKS;
+    to -= stride
+  ) {
+    chunks++;
+    const from = to - stride > floor ? to - stride : floor;
     let logs: Log[] = [];
     try {
       logs = (await client.getLogs({

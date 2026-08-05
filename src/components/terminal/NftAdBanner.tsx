@@ -2,96 +2,118 @@ import { useEffect, useRef, useState } from "react";
 import { WhitelistModal } from "./WhitelistModal";
 
 /**
- * The 1190 mint-day banner, in the empty band at the top-right of the analytics
- * header.
+ * The 1190 mint-day banner: swipes up into the analytics header, holds for a
+ * few seconds, then swipes back out and gives the space up.
  *
- * It SWIPES UP rather than fading: the slot is beside a wall of live numbers
- * that are already changing on their own, and a fade there reads as another
- * value ticking over. Upward motion is the one thing on this screen that isn't
- * a number changing, so it registers as an announcement.
+ * It SWIPES rather than fades because the slot sits beside a wall of live
+ * numbers that are already changing on their own — a fade there reads as
+ * another value ticking over. Upward motion is the one thing on that screen
+ * that isn't a number changing, so it registers as an announcement.
  *
- * The swipe repeats on a slow cycle. A single entrance animation is missed by
- * anyone who arrives mid-scroll or switches back to the tab, and this banner
- * has to keep working for a visitor who has been staring at the terminal for
- * ten minutes. It is deliberately slow and infrequent — a banner that moves
- * often is an irritation, and an irritation gets ignored.
+ * And it LEAVES. A permanent banner over live financial data is the thing every
+ * trader learns to look past within a minute; one that appears, says its piece
+ * and vacates keeps working on the tenth showing. The layout collapses smoothly
+ * behind it rather than jumping, so the header doesn't lurch every cycle.
  *
- * Clicking opens the whitelist modal, which is where the mint details and the
- * claimed count live.
+ * Clicking opens the whitelist modal, where the mint details and the claimed
+ * count live.
  */
 
-/** How long between swipes. Long enough that it never feels like a carousel. */
-const REPEAT_MS = 22_000;
+/** On screen long enough to read the headline and the date, and no longer. */
+const SHOW_MS = 6_000;
+/** Quiet gap before it comes back. */
+const HIDE_MS = 34_000;
+/** Matches the collapse transition below, so unmount waits for the animation. */
+const EXIT_MS = 420;
+
+type Phase = "in" | "out" | "gone";
 
 export function NftAdBanner({ className = "" }: { className?: string }) {
   const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<Phase>("in");
   const [cycle, setCycle] = useState(0);
-  const [visible, setVisible] = useState(false);
-  const ref = useRef<HTMLButtonElement | null>(null);
+  const [onScreen, setOnScreen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
 
-  // Only animate while it's actually on screen. Swiping a banner nobody can see
-  // burns frames and, worse, means the one swipe a visitor WOULD have seen has
-  // already happened by the time they scroll to it.
+  // Only run the cycle while the header is actually in view. A banner that
+  // shows and hides behind the fold has spent its appearance on nobody, and
+  // would be "gone" by the time anyone scrolled up to it.
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof IntersectionObserver === "undefined") {
-      setVisible(true);
+      setOnScreen(true);
       return;
     }
-    const io = new IntersectionObserver(
-      (entries) => setVisible(entries[0]?.isIntersecting ?? false),
-      {
-        threshold: 0.4,
-      },
-    );
+    const io = new IntersectionObserver((e) => setOnScreen(e[0]?.isIntersecting ?? false), {
+      threshold: 0.2,
+    });
     io.observe(el);
     return () => io.disconnect();
   }, []);
 
+  // in → (SHOW_MS) → out → (EXIT_MS) → gone → (HIDE_MS) → in …
+  // Paused whenever the modal is open, so it can't vanish out from under
+  // someone who is reading it.
   useEffect(() => {
-    if (!visible) return;
-    const id = setInterval(() => setCycle((c) => c + 1), REPEAT_MS);
-    return () => clearInterval(id);
-  }, [visible]);
+    if (!onScreen || open) return;
+    const delay = phase === "in" ? SHOW_MS : phase === "out" ? EXIT_MS : HIDE_MS;
+    const id = setTimeout(() => {
+      setPhase((p) => (p === "in" ? "out" : p === "out" ? "gone" : "in"));
+      if (phase === "gone") setCycle((c) => c + 1);
+    }, delay);
+    return () => clearTimeout(id);
+  }, [phase, onScreen, open]);
+
+  const showing = phase !== "gone";
 
   return (
     <>
-      <button
+      {/* The wrapper always exists so the IntersectionObserver has something to
+          watch, and it animates its own height so the header settles rather
+          than snapping shut when the banner leaves. */}
+      <div
         ref={ref}
-        onClick={() => setOpen(true)}
-        aria-label="1190 NFT mint day — whitelist mint details"
-        // overflow-hidden is what makes it a swipe rather than a slide: the art
-        // travels up from below the frame and is clipped until it arrives.
-        className={`group relative block overflow-hidden rounded-xl border border-border bg-surface transition-shadow hover:shadow-[0_0_0_1px_var(--primary)] ${className}`}
+        aria-hidden={!showing}
+        className={`overflow-hidden transition-[max-height,opacity,margin] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          showing ? "max-h-[240px] opacity-100" : "pointer-events-none max-h-0 opacity-0"
+        } ${className}`}
       >
-        {/* The uploaded original is 1344x752 and 1.2 MB — a hero-sized file for
-            a slot 340px wide, on the page every visitor lands on. These are the
-            same art resized to 800px: 40 KB as WebP, 208 KB as a PNG for the
-            handful of clients that still need one. nftad.png stays in the repo
-            as the source to regenerate from. */}
-        <picture>
-          <source srcSet="/nftad.webp" type="image/webp" />
-          <img
-            // Re-keying on the cycle restarts the CSS animation. Cheaper and
-            // steadier than toggling a class, which drops a frame at the reset.
-            key={cycle}
-            src="/nftad-800.png"
-            alt="1190 NFT mint day — whitelist mint"
-            width={1344}
-            height={752}
-            className="swipe-up block h-auto w-full"
-            loading="lazy"
-            decoding="async"
-          />
-        </picture>
-        {/* A hairline sheen that follows the art up, so the motion reads as one
-            object arriving rather than an image being revealed. */}
-        <span
-          key={`sheen-${cycle}`}
-          aria-hidden="true"
-          className="swipe-sheen pointer-events-none absolute inset-0"
-        />
-      </button>
+        <button
+          onClick={() => setOpen(true)}
+          aria-label="1190 NFT mint day — whitelist mint details"
+          // overflow-hidden is what makes it a swipe rather than a slide: the
+          // art travels up from below the frame and is clipped until it lands.
+          className="group relative block w-full overflow-hidden rounded-xl border border-border bg-surface transition-shadow hover:shadow-[0_0_0_1px_var(--primary)]"
+        >
+          {/* The upload is 1344x752 and 1.2 MB — hero-sized for a 340px slot on
+              the page every visitor lands on. These are the same art at 800px:
+              40 KB WebP, 208 KB PNG fallback. nftad.png stays as the source. */}
+          <picture>
+            <source srcSet="/nftad.webp" type="image/webp" />
+            <img
+              // Re-keying restarts the CSS animation. Cheaper and steadier than
+              // toggling a class, which drops a frame at the reset.
+              key={cycle}
+              src="/nftad-800.png"
+              alt="1190 NFT mint day — whitelist mint"
+              width={1344}
+              height={752}
+              className={`${phase === "out" ? "swipe-out" : "swipe-up"} block h-auto w-full`}
+              loading="lazy"
+              decoding="async"
+            />
+          </picture>
+          {/* A hairline sheen travelling with the art, so the motion reads as
+              one object arriving rather than an image being revealed. */}
+          {phase === "in" && (
+            <span
+              key={`sheen-${cycle}`}
+              aria-hidden="true"
+              className="swipe-sheen pointer-events-none absolute inset-0"
+            />
+          )}
+        </button>
+      </div>
 
       {open && <WhitelistModal onClose={() => setOpen(false)} />}
     </>

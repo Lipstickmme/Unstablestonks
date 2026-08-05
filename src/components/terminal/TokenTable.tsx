@@ -258,8 +258,30 @@ function WhaleHolders({ count }: { count?: number }) {
  * must not read as 0%. Turns amber past `warnAbove`, the point where the
  * concentration is worth a second look.
  */
-function SupplyPct({ pct, warnAbove }: { pct?: number; warnAbove: number }) {
-  if (pct == null) return <span className="text-[11px] text-muted-foreground">—</span>;
+function SupplyPct({
+  pct,
+  warnAbove,
+  checked = true,
+}: {
+  pct?: number;
+  warnAbove: number;
+  /** False when this row is past the analysis cap — never asked, not "none". */
+  checked?: boolean;
+}) {
+  if (pct == null) {
+    return (
+      <span
+        className={`text-[11px] ${checked ? "text-muted-foreground" : "text-muted-foreground/30"}`}
+        title={
+          checked
+            ? "No distribution data from any source for this token"
+            : "Not analysed — only the busiest rows are scanned each cycle. Open the token for its own read."
+        }
+      >
+        {checked ? "—" : "·"}
+      </span>
+    );
+  }
   const hot = pct >= warnAbove;
   return (
     <span className={`num text-xs ${hot ? "text-warn" : "text-muted-foreground"}`}>
@@ -305,9 +327,23 @@ function DexPaidCell({ paid, unsupported }: { paid?: boolean; unsupported?: bool
   );
 }
 
-function BundleCell({ stats }: { stats?: BundleStats }) {
+function BundleCell({ stats, checked = true }: { stats?: BundleStats; checked?: boolean }) {
   if (!stats || stats.sample === 0) {
-    return <span className="num text-xs text-muted-foreground">—</span>;
+    // Bundle detection needs a swap feed, and that feed only covers the busiest
+    // pools. A row outside it was never examined — which is not the same as
+    // "examined and clean", and showing both as "—" made the column look broken.
+    return (
+      <span
+        className={`num text-xs ${checked ? "text-muted-foreground" : "text-muted-foreground/30"}`}
+        title={
+          checked
+            ? "No swaps in the loaded window to analyse"
+            : "Not analysed — the swap feed covers the busiest pools. Open the token for its own read."
+        }
+      >
+        {checked ? "—" : "·"}
+      </span>
+    );
   }
   if (stats.count === 0) {
     return <span className="text-[11px] text-bull">clean</span>;
@@ -736,16 +772,27 @@ export function TokenTable({
                     {/* Dev holding over top-10 concentration. */}
                     <td className="px-1.5 py-2 text-right leading-tight">
                       <div>
-                        <SupplyPct pct={insights?.[t.address]?.devHoldingPct} warnAbove={5} />
+                        <SupplyPct
+                          pct={insights?.[t.address]?.devHoldingPct}
+                          warnAbove={5}
+                          checked={insights?.[t.address] != null}
+                        />
                       </div>
                       <div>
-                        <SupplyPct pct={insights?.[t.address]?.top10Pct} warnAbove={50} />
+                        <SupplyPct
+                          pct={insights?.[t.address]?.top10Pct}
+                          warnAbove={50}
+                          checked={insights?.[t.address] != null}
+                        />
                       </div>
                     </td>
                     {/* Bundle risk over DexScreener paid state. */}
                     <td className="px-1.5 py-2 text-center leading-tight">
                       <div>
-                        <BundleCell stats={bundles?.[t.address]} />
+                        <BundleCell
+                          stats={bundles?.[t.address]}
+                          checked={bundles?.[t.address] != null}
+                        />
                       </div>
                       <div>
                         <DexPaidCell

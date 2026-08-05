@@ -394,6 +394,21 @@
   animation: swipe-up 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Leaving the way it came, upward and out of frame. */
+@keyframes swipe-out {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-60%);
+    opacity: 0;
+  }
+}
+.swipe-out {
+  animation: swipe-out 0.42s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
 /* A light sweep travelling with the art. Silver banner, silver highlight. */
 @keyframes swipe-sheen {
   0% {
@@ -512,9 +527,13 @@
   .swipe-sheen {
     animation: none;
   }
-  /* The banner still needs to arrive, just without the travel. */
+  /* The banner still needs to arrive and leave, just without the travel. */
   .swipe-up {
     animation: fade-up 0.4s ease-out both;
+  }
+  .swipe-out {
+    animation: none;
+    opacity: 0;
   }
 }
 
