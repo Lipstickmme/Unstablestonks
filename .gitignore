@@ -30,10 +30,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# big/ workspace
-big/**/node_modules
-big/contracts/artifacts
-big/contracts/cache
-big/contracts/deployments
-big/frontend/.next

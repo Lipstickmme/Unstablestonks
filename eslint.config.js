@@ -6,8 +6,7 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  // `big/` is a self-contained Next.js + Hardhat workspace with its own lint setup.
-  { ignores: ["dist", ".output", ".vinxi", "big"] },
+  { ignores: ["dist", ".output", ".vinxi"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
