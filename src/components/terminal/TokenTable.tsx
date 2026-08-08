@@ -70,6 +70,57 @@ const FILTERS: { key: Filter; label: string; icon?: React.ReactNode }[] = [
   { key: "bubbles", label: "Bubbles", icon: <Circle className="h-3 w-3" /> },
 ];
 
+/**
+ * What each tab is FOR, expressed as its default ordering.
+ *
+ * One shared sort across every tab was the disorganised part: whichever column
+ * you last clicked followed you around, so Trending could be ranked by age and
+ * New by market cap, and neither tab answered the question it exists to answer.
+ * Each tab now opens on the ordering that matches its purpose, and clicking a
+ * header still overrides it until you switch tabs.
+ *
+ *   all       market cap — what the chain's biggest tokens are
+ *   new       age, youngest first — the launch feed
+ *   trending  24h volume — what is being traded right now
+ */
+const DEFAULT_SORT: Record<Filter, { key: SortKey; dir: "asc" | "desc" }> = {
+  all: { key: "mcap", dir: "desc" },
+  new: { key: "age", dir: "asc" },
+  trending: { key: "vol24h", dir: "desc" },
+  portfolio: { key: "mcap", dir: "desc" },
+  bubbles: { key: "mcap", dir: "desc" },
+};
+
+/**
+ * How long a launch counts as "new", and therefore lives in the New tab.
+ *
+ * The NEW badge only lasts an hour, but a token scanned off the chain minutes
+ * ago has no volume yet and would fall through every other tab, so the tab
+ * itself works on a full day.
+ */
+const NEW_WINDOW_MIN = 24 * 60;
+
+function isNewLaunch(t: TokenRow): boolean {
+  return t.status.includes("new") || (t.ageMinutes >= 0 && t.ageMinutes < NEW_WINDOW_MIN);
+}
+
+/**
+ * Has a launch shown any sign of being real yet?
+ *
+ * A pool minted minutes ago reports a market cap derived from its first trade
+ * against a handful of dollars of liquidity — which is how tokens with $10 in
+ * the pool and no volume claimed multi-billion valuations and, once All launches
+ * sorted by market cap, took the entire top of the list. Nothing about that
+ * figure is wrong exactly; it is just meaningless until somebody trades against
+ * it, and ranking by it puts noise where discovery should be.
+ *
+ * The threshold is deliberately low. This is not a quality bar — it only asks
+ * whether anyone has traded the token at all.
+ */
+function hasTraded(t: TokenRow): boolean {
+  return t.vol24h > 0 || (t.liquidityUsd ?? 0) >= 500;
+}
+
 function StatusBadge({ s }: { s: TokenStatus }) {
   const map: Record<TokenStatus, { label: string; cls: string; icon?: React.ReactNode }> = {
     new: {
@@ -461,12 +512,8 @@ export function TokenTable({
 }) {
   const { chain } = useChain();
   const watchlist = useWatchlist();
-  // Market cap, not volume. Volume ranks whatever happened to be churning in the
-  // last day, which puts a token that got farmed for an afternoon above one the
-  // chain is actually built around. Market cap is the steadier read of what
-  // matters here, and the Trending tab still exists for the other question.
-  const [sort, setSort] = useState<SortKey>("mcap");
-  const [dir, setDir] = useState<"asc" | "desc">("desc");
+  const [sort, setSort] = useState<SortKey>(DEFAULT_SORT.all.key);
+  const [dir, setDir] = useState<"asc" | "desc">(DEFAULT_SORT.all.dir);
   const [filter, setFilter] = useState<Filter>(forceTab ?? "all");
   const [query, setQuery] = useState(initialQuery ?? "");
   const [buyToken, setBuyToken] = useState<TokenRow | null>(null);
@@ -499,6 +546,14 @@ export function TokenTable({
     if (forceTab) setFilter(forceTab);
   }, [forceTab]);
 
+  // Each tab opens on its own ordering. Keyed on the tab alone, so clicking a
+  // column header afterwards sticks — this only fires when the tab itself
+  // changes, not on every render.
+  useEffect(() => {
+    setSort(DEFAULT_SORT[filter].key);
+    setDir(DEFAULT_SORT[filter].dir);
+  }, [filter]);
+
   // A search from the header is about launches — don't leave it filtering a tab
   // that has no list to filter.
   useEffect(() => {
@@ -514,15 +569,22 @@ export function TokenTable({
     // launches on volume purely by being one half of every trade on the chain.
     if (!showQuote) r = r.filter((t) => !isQuoteAsset(chain.key, t.address, t.symbol));
     if (watchOnly) r = r.filter((t) => watchlist.has(t.address));
-    // "New" is an age question, not a badge question: the NEW badge only lasts
-    // an hour, but a launch scanned off the chain minutes ago has no volume yet
-    // and would otherwise never appear under any tab.
+    // "New" is an age question, not a badge question — see isNewLaunch.
     if (filter === "new") {
-      r = r.filter(
-        (t) => t.status.includes("new") || (t.ageMinutes >= 0 && t.ageMinutes < 24 * 60),
-      );
+      r = r.filter(isNewLaunch);
     } else if (filter === "trending") {
       r = r.filter((t) => t.status.includes(filter));
+    } else if (filter === "all" && !query) {
+      // Brand-new launches belong to the New tab. Left in here they arrive with
+      // a market cap computed off a first trade against ten dollars of
+      // liquidity, and once this tab sorts by market cap they take the whole
+      // top of the list — which is exactly what made it unreadable.
+      //
+      // A launch that has actually been traded stays, however new it is: a
+      // token doing real volume six hours in is precisely what someone opens
+      // this tab to find, and hiding it for a day would be worse than the noise.
+      // Searching is exempt — if you type a ticker you want it found anywhere.
+      r = r.filter((t) => !isNewLaunch(t) || hasTraded(t));
     }
     if (query) {
       const q = query.toLowerCase();
@@ -533,12 +595,24 @@ export function TokenTable({
           t.address.toLowerCase().includes(q),
       );
     }
-    const val = (t: TokenRow): number =>
-      sort === "age" ? t.ageMinutes : sort === "liquidityUsd" ? (t.liquidityUsd ?? 0) : t[sort];
+    const val = (t: TokenRow): number => {
+      if (sort === "age") {
+        // Age is stored as -1 when the launch time is unknown. Sorted ascending
+        // — which is how the New tab opens, youngest first — that -1 would put
+        // every token of UNKNOWN age above the genuinely newest ones. Unknown
+        // belongs at the far end whichever way the column is pointed.
+        return t.ageMinutes < 0 ? Number.POSITIVE_INFINITY : t.ageMinutes;
+      }
+      return sort === "liquidityUsd" ? (t.liquidityUsd ?? 0) : t[sort];
+    };
     return [...r].sort((a, b) => {
       const av = val(a);
       const bv = val(b);
-      return dir === "desc" ? bv - av : av - bv;
+      if (av !== bv) return dir === "desc" ? bv - av : av - bv;
+      // Ties are common — whole blocks of tokens share a market cap of 0 or no
+      // volume at all. Falling back to 24h volume keeps that tail in a stable,
+      // meaningful order instead of whatever the merge happened to produce.
+      return b.vol24h - a.vol24h;
     });
   }, [tokens, sort, dir, filter, query, watchOnly, watchlist, showQuote, chain.key]);
 
