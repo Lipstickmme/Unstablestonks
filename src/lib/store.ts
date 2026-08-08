@@ -291,11 +291,31 @@ export const claimWhitelistSpot = createServerFn({ method: "POST" })
     return { ok: true, spot, taken: spot, cap: WHITELIST_CAP, shared: true };
   });
 
+/**
+ * How many spots are gone.
+ *
+ * `claimed` is the honest measured figure — one entry per wallet that actually
+ * finished the tasks and claimed. `taken` is what belongs on screen: those real
+ * claims added to the pre-allocated block, capped.
+ *
+ * Both are returned because they answer different questions, and conflating them
+ * was a live bug: this used to hand back the raw roster length under the name
+ * `taken`, while `claimWhitelistSpot` handed back the baseline-inclusive figure
+ * under the SAME name. The modal added the baseline to whichever it had, so the
+ * counter was correct on load and jumped by a whole baseline the moment someone
+ * claimed. Naming them separately makes that mistake impossible to repeat.
+ */
 export const readWhitelistCount = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ taken: number; cap: number; shared: boolean }> => {
-    if (!kvEnabled()) return { taken: 0, cap: WHITELIST_CAP, shared: false };
-    const len = (await kvPipeline<number>([["LLEN", key.wlList]]))?.[0] ?? 0;
-    return { taken: len, cap: WHITELIST_CAP, shared: true };
+  async (): Promise<{ claimed: number; taken: number; cap: number; shared: boolean }> => {
+    if (!kvEnabled())
+      return { claimed: 0, taken: WHITELIST_BASELINE, cap: WHITELIST_CAP, shared: false };
+    const claimed = (await kvPipeline<number>([["LLEN", key.wlList]]))?.[0] ?? 0;
+    return {
+      claimed,
+      taken: Math.min(WHITELIST_CAP, claimed + WHITELIST_BASELINE),
+      cap: WHITELIST_CAP,
+      shared: true,
+    };
   },
 );
 

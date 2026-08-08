@@ -7,10 +7,10 @@ import type { TokenRow, TokenStatus, TradeEvent } from "@/lib/types";
 import type { BundleStats } from "@/lib/bundles";
 import { useSourceCounts, WHALE_HOLDER_USD, type TokenInsight } from "@/lib/data/hooks";
 import { baseBotUrl } from "@/config/links";
-import { venueLogo } from "@/config/brand";
 import { BrandImage } from "@/components/brand/BrandImage";
 import { WhaleIcon } from "@/components/brand/WhaleIcon";
 import { useChain } from "@/lib/chain-context";
+import { VenueIcon } from "./PoolBreakdown";
 import { useWatchlist } from "@/lib/watchlist";
 import { useSpikes, spikeLabel } from "@/lib/spikes";
 import { trippedHosts } from "@/lib/net";
@@ -148,19 +148,21 @@ function Sparkline({ points, positive }: { points?: number[]; positive: boolean 
 function VenueCell({ t }: { t: TokenRow }) {
   const venue = t.launchpadName ?? t.dexName;
   if (!venue) return <span className="text-[11px] text-muted-foreground">—</span>;
-  const logo = venueLogo(venue);
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+    <span
+      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+      title={t.poolCount && t.poolCount > 1 ? `${venue} + ${t.poolCount - 1} more venue(s)` : venue}
+    >
       {t.launchpadName && <Rocket className="h-3 w-3 text-grad" />}
-      {/* Venues we have artwork for show the mark alone; the rest keep their
-          name, so an unbranded DEX is never reduced to a blank cell. */}
-      <BrandImage
-        src={logo}
-        alt={venue}
-        className="h-3.5 w-3.5 rounded-sm object-contain"
-        fallback={<span className="truncate">{venue}</span>}
-      />
-      {logo && <span className="sr-only">{venue}</span>}
+      {/* Every venue gets a mark now, not just the three we ship artwork for.
+          New launchpads appear faster than logo files do, and a lettermark
+          identifies one consistently until its real logo lands. */}
+      <VenueIcon name={venue} size={14} />
+      <span className="max-w-[90px] truncate">{venue}</span>
+      {/* More than one pool means the venue shown is just the deepest. */}
+      {t.poolCount && t.poolCount > 1 ? (
+        <span className="num text-[9px] text-muted-foreground/70">+{t.poolCount - 1}</span>
+      ) : null}
     </span>
   );
 }

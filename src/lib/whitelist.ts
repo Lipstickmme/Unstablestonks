@@ -15,7 +15,7 @@ import { readCache, writeCache } from "./persist";
 // SwapPanel marks it after a swap confirms on chain.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const WHITELIST_CAP = 100;
+export const WHITELIST_CAP = 1190;
 
 /** The whitelist is open again — claiming works. */
 export const WHITELIST_CLOSED = false;
@@ -29,10 +29,12 @@ export const WHITELIST_CLOSED = false;
  * reflects what is genuinely left rather than only what this app handed out.
  *
  * Named as a baseline rather than folded into the count silently, so nobody
- * later reads the number on screen as a live tally of on-page claims. Public
- * claims are added on top of it, and the cap still stops at WHITELIST_CAP.
+ * later reads the number on screen as a live tally of on-page claims. Every
+ * claim made by an actual person finishing the tasks is counted ON TOP of it by
+ * the shared roster (store.ts), so the figure on screen moves for real from here
+ * up to WHITELIST_CAP.
  */
-export const WHITELIST_BASELINE = 60;
+export const WHITELIST_BASELINE = 200;
 
 const KEY = "whitelist.v1";
 
@@ -127,7 +129,7 @@ export function claimSpot(wallet: string, authoritativeSpot?: number): ClaimResu
     return { ok: true, spot, state: save({ ...s, wallet: addr, spot }) };
   }
   if (s.roster.length >= WHITELIST_CAP) {
-    return { ok: false, reason: "All 100 spots on this device are taken." };
+    return { ok: false, reason: `All ${WHITELIST_CAP} spots on this device are taken.` };
   }
 
   const roster = [...s.roster, addr];

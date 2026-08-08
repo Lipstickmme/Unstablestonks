@@ -64,8 +64,30 @@ const VENUE_LOGOS: { test: RegExp; src: string }[] = [
   { test: /pons/i, src: "/ponsfamily.jpg" },
 ];
 
-/** Logo for a trading venue, when we have one. */
+/**
+ * Logo for a trading venue, when we have one.
+ *
+ * Returns undefined for the many venues we have no artwork for — Sushi,
+ * PancakeSwap, Noxa, Bankr, Virtuals, Hoodit and whatever launches next month.
+ * Callers render a lettermark in that case (see VenueIcon), so a new venue
+ * appears correctly labelled the day it shows up rather than as a blank.
+ *
+ * Adding real artwork is two steps and no code: drop the file in public/ and add
+ * a line above. Order matters — the first match wins.
+ */
 export function venueLogo(name?: string): string | undefined {
   if (!name) return undefined;
   return VENUE_LOGOS.find((v) => v.test.test(name))?.src;
+}
+
+/**
+ * Stable accent colour for a venue with no artwork, derived from its name.
+ *
+ * Deterministic so a venue keeps the same colour across every pool row and
+ * between sessions — an unrecognised venue should still be recognisable.
+ */
+export function venueHue(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
 }

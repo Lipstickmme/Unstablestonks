@@ -28,6 +28,8 @@ import {
   fetchTokenInfo,
   fetchTokenMarket,
   fetchTokenPools,
+  fetchVenuePools,
+  type TokenPoolInfo,
   type Candle,
 } from "./geckoterminal";
 import { getErc20Balance, getErc20Meta, getNativeBalance, getRpcHealth } from "./rpc";
@@ -304,6 +306,14 @@ function readLastGood(chainKey: ChainKey): TokenRow[] {
   return hit.rows;
 }
 
+/**
+ * Ceiling on the persisted list, and on how much of it is carried forward as a
+ * floor. Generous enough that nothing a visitor was actually looking at gets
+ * dropped, small enough that the table stays a table.
+ */
+const MAX_CACHED_ROWS = 400;
+const MAX_FLOOR_ROWS = 300;
+
 function publishTokens(
   chainKey: ChainKey,
   cacheKey: string,
@@ -324,7 +334,12 @@ function publishTokens(
   if (shrunk && Date.now() - last.ts < LAST_GOOD_TTL) return;
 
   published.set(chainKey, { sig, count: rows.length, ts: Date.now() });
-  writeCache(cacheKey, rows);
+  // Bounded. The cache is now merged back in as a floor rather than used only
+  // as a last resort, so every publish re-writes it and its one-hour read window
+  // never actually expires while the tab is open — without a cap the stored list
+  // would only ever grow. Rows arrive sorted by volume with fresh launches ahead
+  // of the untraded tail, so the cut falls on the least interesting end.
+  writeCache(cacheKey, rows.slice(0, MAX_CACHED_ROWS));
 
   // Publish for the next cold visitor — but only when the live sources actually
   // answered. Echoing a snapshot back to itself would keep it alive forever.
@@ -378,19 +393,14 @@ export function useTokens() {
   // row rather than after an enrichment pass. Resolves to null when no store is
   // configured, in which case nothing below changes.
   //
-  // `enabled` is decided ONCE per chain, at mount. Reading localStorage inline
-  // meant the flag flipped to false the moment the first merge wrote the cache
-  // — usually a second or two in, while this request was still in flight — so
-  // the snapshot was abandoned just before it could contribute and the older
-  // tokens it carried never appeared at all.
-  const [coldStart] = useState<Record<string, boolean>>(() => ({}));
-  if (coldStart[chainKey] === undefined) {
-    coldStart[chainKey] = !readCache<TokenRow[]>(cacheKey)?.length;
-  }
-
+  // Fetched for EVERY visitor, not just cold ones. It used to be gated on an
+  // empty localStorage, on the reasoning that a warm visitor already had rows —
+  // but the snapshot is the union of what every visitor has seen, so it is
+  // routinely larger than any single browser's cache. Skipping it was throwing
+  // away the widest list available. One request, cached five minutes, no
+  // refetch interval.
   const snapshotQ = useQuery<TokenRow[] | null>({
     queryKey: ["tokens-snapshot", chainKey],
-    enabled: coldStart[chainKey],
     staleTime: 5 * 60_000,
     refetchInterval: false,
     retry: 0,
@@ -436,7 +446,7 @@ export function useTokens() {
     staleTime: DIRECTORY_REFRESH,
     retry: 1,
     queryFn: async () => {
-      const [dsRows, bsRows, explorerScan, seedRows] = await Promise.all([
+      const [dsRows, bsRows, explorerScan, seedRows, venueRows] = await Promise.all([
         fetchDexScreenerTokens(chain).catch(() => [] as TokenRow[]),
         fetchTokens(chain).catch(() => [] as TokenRow[]),
         fetchExplorerTokens(chain).catch(() => ({ rows: [] as TokenRow[], note: "threw" })),
@@ -444,6 +454,14 @@ export function useTokens() {
         // cached for the session, and it is the only source that cannot go dark
         // — which is what keeps Arc from showing an empty terminal.
         fetchSeedTokens(chainKey, chain).catch(() => [] as TokenRow[]),
+        // Top pools on every venue the chain has, one page each. The market lane
+        // reads one global ranking, so on Robinhood — where Uniswap V3 alone
+        // clears hundreds of millions a day — the top pages are all Uniswap and
+        // the launchpads that keep appearing (Noxa, Bankr, Sushi Launch,
+        // Uniswap's own Pools) never surface at any page depth worth paying for.
+        // The venue list is fetched, not hardcoded, so next month's launchpad is
+        // picked up without a release.
+        fetchVenuePools(chain).catch(() => [] as TokenRow[]),
       ]);
 
       // The live pools tell the scanner which DEX factories this chain actually
@@ -456,9 +474,17 @@ export function useTokens() {
         () => [] as TokenRow[],
       );
 
-      // Seeds go last: they carry no market data, so anything a real source
+      // Venue rows lead: they carry live pool figures, same as the market lane.
+      // Seeds go last — they carry no market data, so anything a real source
       // knows about the same address must win.
-      const rows = [...dsRows, ...bsRows, ...explorerScan.rows, ...freshRows, ...seedRows];
+      const rows = [
+        ...venueRows,
+        ...dsRows,
+        ...bsRows,
+        ...explorerScan.rows,
+        ...freshRows,
+        ...seedRows,
+      ];
 
       // Price anything the directory found that no market source covers. One
       // call covers 30 addresses, so this stays cheap even on a full list.
@@ -468,7 +494,7 @@ export function useTokens() {
         : [];
 
       recordSources(chainKey, {
-        geckoterminal: marketQ.data?.length ?? 0,
+        geckoterminal: (marketQ.data?.length ?? 0) + venueRows.length,
         dexscreener: dsRows.length,
         blockscout: bsRows.length,
         explorer: explorerScan.rows.length,
@@ -493,12 +519,25 @@ export function useTokens() {
     const directory = directoryQ.data ?? [];
     const snapshot = snapshotQ.data ?? [];
 
+    // The list this browser already had, from a previous visit. This is the fix
+    // for "the data on load is less than after a refresh": it used to be a pure
+    // LAST RESORT, consulted only when the merge came out completely empty, so
+    // a warm visitor's accumulated list was thrown away and replaced by
+    // whatever the live feeds happened to return on that tick — which is one
+    // ranked page, not the chain. As a floor instead, the terminal can only
+    // ever gain rows between refreshes.
+    //
+    // It goes LAST, so every field it supplies is a gap-fill and a stale price
+    // can never overwrite a live one. The hour-long read window is what stops
+    // dead tokens accumulating forever.
+    const persisted = (readCache<TokenRow[]>(cacheKey, 60 * 60_000) ?? []).slice(0, MAX_FLOOR_ROWS);
+
     const merged = new Map<string, TokenRow>();
     // Order matters: the first source to introduce an address owns its market
-    // figures, later ones only fill blanks. Live data leads; the snapshot and
-    // this session's last good list come last, so they can only fill gaps and
-    // never overwrite a fresh figure.
-    for (const group of [market, directory, snapshot, readLastGood(chainKey)]) {
+    // figures, later ones only fill blanks. Live data leads; the snapshot, this
+    // session's last good list and the persisted cache come last, so they can
+    // only fill gaps and never overwrite a fresh figure.
+    for (const group of [market, directory, snapshot, readLastGood(chainKey), persisted]) {
       for (const row of group) {
         const cur = merged.get(row.address);
         if (cur) foldRow(cur, row);
@@ -1326,6 +1365,12 @@ export interface TokenDetailData {
   trades: TradeEvent[];
   /** Primary (deepest) pool address, when DEX-indexed — feeds the live chart. */
   pool: string | null;
+  /**
+   * Every pool this token trades in, deepest first. The liquidity figure in the
+   * header is their sum, and this is what that sum is made of — without it the
+   * page asserts a number the reader has no way to check.
+   */
+  pools: TokenPoolInfo[];
 }
 
 /**
@@ -1483,7 +1528,7 @@ async function loadTokenCore(
   //    possible and the page can paint.
   const pool = pools[0]?.pool ?? recallPool(chainKey, addr);
   rememberPool(chainKey, addr, pool);
-  return { token, holders: [], trades: [], pool };
+  return { token, holders: [], trades: [], pool, pools };
 }
 
 /**
@@ -1512,7 +1557,8 @@ export function useTokenDetail(address: string) {
       // Seed the pool memo from the cached row too, so the very first core load
       // can't drop a pool the terminal list already knew about.
       rememberPool(chainKey, addr, row.primaryPool ?? null);
-      return { token: row, holders: [], trades: [], pool: row.primaryPool ?? null };
+      // No pool breakdown in the cached row — the core load fills it in.
+      return { token: row, holders: [], trades: [], pool: row.primaryPool ?? null, pools: [] };
     },
     initialDataUpdatedAt: 0,
     queryFn: () => loadTokenCore(chain, chainKey, address),

@@ -2,7 +2,6 @@ import { formatNum, formatUSD } from "@/lib/format";
 import type { ChainStats } from "@/lib/types";
 import { useChain } from "@/lib/chain-context";
 import { AnimatedNumber } from "./AnimatedNumber";
-import { NftAdBanner } from "./NftAdBanner";
 import { ArrowUpRight, TrendingDown, TrendingUp } from "lucide-react";
 
 interface Props {
@@ -109,22 +108,14 @@ export function StatsOverview({ stats, loading, vol24h, vol24hChange }: Props) {
           </p>
         </div>
 
-        {/* The mint banner and the explorer link share the right-hand column:
-            the link stays pinned top-right where it has always been, and the
-            banner fills the empty band underneath it. On a phone the column
-            collapses and the banner goes full width above the tiles, which is
-            the only place it can be read at that size. */}
-        <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:items-end">
-          <a
-            href={chain.explorerUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 self-start rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-elevated sm:self-auto"
-          >
-            View on explorer <ArrowUpRight className="h-3 w-3" />
-          </a>
-          <NftAdBanner className="w-full sm:w-[300px] lg:w-[340px]" />
-        </div>
+        <a
+          href={chain.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 self-start rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-elevated"
+        >
+          View on explorer <ArrowUpRight className="h-3 w-3" />
+        </a>
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-4">

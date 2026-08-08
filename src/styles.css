@@ -369,69 +369,6 @@
   );
 }
 
-/* ── Banner swipe-up ─────────────────────────────────────────────────────────
-   The art rises from below its own frame and settles. The overshoot is small
-   and the settle is short — an easeOutBack that carries too far reads as a toy,
-   and this sits next to live financial numbers. */
-
-@keyframes swipe-up {
-  0% {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-  55% {
-    opacity: 1;
-  }
-  70% {
-    transform: translateY(-2.5%);
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-.swipe-up {
-  animation: swipe-up 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-/* Leaving the way it came, upward and out of frame. */
-@keyframes swipe-out {
-  from {
-    transform: translateY(0);
-    opacity: 1;
-  }
-  to {
-    transform: translateY(-60%);
-    opacity: 0;
-  }
-}
-.swipe-out {
-  animation: swipe-out 0.42s cubic-bezier(0.4, 0, 1, 1) both;
-}
-
-/* A light sweep travelling with the art. Silver banner, silver highlight. */
-@keyframes swipe-sheen {
-  0% {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-  35% {
-    opacity: 0.55;
-  }
-  100% {
-    transform: translateY(-100%);
-    opacity: 0;
-  }
-}
-.swipe-sheen {
-  background: linear-gradient(
-    to top,
-    transparent 0%,
-    color-mix(in oklab, white 22%, transparent) 45%,
-    transparent 100%
-  );
-  animation: swipe-sheen 1.1s ease-out both;
-}
 
 /* Bubbles settling into the map, biggest first.
    This runs on the bubble's SKIN, not on the link that positions it: the link

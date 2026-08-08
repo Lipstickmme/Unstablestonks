@@ -57,12 +57,13 @@ export function WhitelistModal({ onClose }: { onClose: () => void }) {
 
   const done = allTasksDone(state);
   const claimed = state.spot != null && state.wallet != null;
-  // Allocated-before-launch spots plus whatever has since been claimed. The
-  // baseline is added rather than substituted so a real claim still moves the
-  // number, and the total can never exceed the cap.
+  // `taken` already includes the pre-allocated block — the server owns that sum
+  // now, precisely so this line can't add the baseline a second time. It only
+  // falls back to computing the figure when there is no shared store to ask, in
+  // which case the per-device roster is all we have.
   const takenCount = WHITELIST_CLOSED
     ? WHITELIST_CAP
-    : Math.min(WHITELIST_CAP, WHITELIST_BASELINE + (taken ?? state.roster.length));
+    : Math.min(WHITELIST_CAP, taken ?? WHITELIST_BASELINE + state.roster.length);
   const remaining = Math.max(0, WHITELIST_CAP - takenCount);
   const pctClaimed = Math.round((takenCount / WHITELIST_CAP) * 100);
   const soldOut = remaining === 0;

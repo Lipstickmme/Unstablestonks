@@ -99,6 +99,10 @@ interface GtPoolsResp {
   included?: GtIncluded[];
 }
 
+interface GtDexesResp {
+  data?: { id?: string; attributes?: { name?: string } }[];
+}
+
 interface GtTokenInfoResp {
   data?: {
     attributes?: {
@@ -149,6 +153,31 @@ export async function fetchTokenInfo(cfg: ChainConfig, address: string): Promise
  */
 const LAUNCHPAD_RE =
   /(^|[-_])(pump|four|bags|boop|sunpump|moonshot)|\bfun\b|bonding|launchpad|(^|[-_])pad($|[-_])/i;
+
+/**
+ * Named launchpads that the generic pattern above cannot catch, because their
+ * names say nothing about what they are. Robinhood Chain's wave is all like
+ * this — "Noxa", "Bankr", "Virtuals", "Hoodit" are just words.
+ *
+ * Anchored to a word boundary on each side so a venue merely CONTAINING one of
+ * these strings isn't swept up. Kept as a stopgap list rather than the primary
+ * mechanism: the venue roster is fetched live (see fetchNetworkDexes), so a
+ * launchpad whose name announces itself needs no entry here at all.
+ */
+const NAMED_LAUNCHPADS =
+  /\b(noxa|bankr|virtuals|hoodit|clanker|flaunch|zora|apestore|believe)\b|\b(sushi|uniswap|pancake\w*)[\s._-]*(launch|pools)\b|\bpools\.trade\b/i;
+
+/**
+ * Is this venue a launchpad rather than a plain AMM?
+ *
+ * Checks the id AND the display name. Indexers are inconsistent about which one
+ * carries the telling word: an id of "noxa-launchpad" says it outright, while
+ * "Sushi Launch" only ever appears in the name — its id is just a slug.
+ */
+function isLaunchpadVenue(dexId: string, dexName?: string): boolean {
+  const both = `${dexId} ${dexName ?? ""}`;
+  return LAUNCHPAD_RE.test(both) || NAMED_LAUNCHPADS.test(both);
+}
 
 function prettyDex(id: string): string {
   return id
@@ -205,14 +234,15 @@ export async function fetchTokenPools(cfg: ChainConfig, address: string): Promis
     .map((p) => {
       const a = p.attributes!;
       const dexId = p.relationships?.dex?.data?.id ?? "";
+      const dexName = dexNames.get(dexId) ?? prettyDex(dexId);
       const pc = a.price_change_percentage ?? {};
       const vol = a.volume_usd ?? {};
       const tx24 = a.transactions?.h24 ?? {};
       return {
         pool: a.address!,
         dexId,
-        dexName: dexNames.get(dexId) ?? prettyDex(dexId),
-        isLaunchpad: LAUNCHPAD_RE.test(dexId),
+        dexName,
+        isLaunchpad: isLaunchpadVenue(dexId, dexName),
         createdAtMs: a.pool_created_at ? new Date(a.pool_created_at).getTime() : 0,
         reserveUsd: n(a.reserve_in_usd),
         vol5m: n(vol.m5),
@@ -249,7 +279,106 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
     gt<GtPoolsResp>(`/networks/${net}/new_pools?include=base_token%2Cdex&page=1`),
     gt<GtPoolsResp>(`/networks/${net}/new_pools?include=base_token%2Cdex&page=2`),
   ]);
+  return rowsFromPoolPages(responses);
+}
 
+/**
+ * Every DEX GeckoTerminal indexes on a network, newest list each time.
+ *
+ * Hardcoding venue ids was never going to hold. Robinhood Chain alone gained
+ * Uniswap's Pools launchpad, Sushi Launch, Noxa, Bankr, Virtuals and Hoodit
+ * inside a few weeks of mainnet, and any list written into this file is stale
+ * the day someone deploys the next one. Asking the indexer which venues exist
+ * means a launchpad that appears tomorrow is picked up without a release.
+ *
+ * Cached for an hour: venue rosters change on the scale of weeks, and this sits
+ * behind a 30/min rate limit shared with every other feed.
+ */
+const dexCache = new Map<string, { ts: number; dexes: NetworkDex[] }>();
+const DEX_TTL = 60 * 60_000;
+
+export interface NetworkDex {
+  id: string;
+  name: string;
+  isLaunchpad: boolean;
+}
+
+export async function fetchNetworkDexes(cfg: ChainConfig): Promise<NetworkDex[]> {
+  const net = cfg.geckoterminalNetwork;
+  if (!net) return [];
+  const hit = dexCache.get(net);
+  if (hit && Date.now() - hit.ts < DEX_TTL) return hit.dexes;
+
+  const pages = await Promise.all([
+    gt<GtDexesResp>(`/networks/${net}/dexes?page=1`),
+    gt<GtDexesResp>(`/networks/${net}/dexes?page=2`),
+  ]);
+  const dexes: NetworkDex[] = [];
+  const seen = new Set<string>();
+  for (const page of pages) {
+    for (const d of page?.data ?? []) {
+      const id = d.id ?? "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const name = d.attributes?.name ?? prettyDex(id);
+      // Match on BOTH id and display name. Indexers are inconsistent about
+      // which one carries the recognisable word — "noxa-launchpad" says it in
+      // the id, "Sushi Launch" only in the name.
+      dexes.push({ id, name, isLaunchpad: isLaunchpadVenue(id, name) });
+    }
+  }
+  // A failed lookup must not be cached as "this chain has no venues", or the
+  // per-venue sweep below would go quiet for an hour on one bad request.
+  if (dexes.length) dexCache.set(net, { ts: Date.now(), dexes });
+  return dexes;
+}
+
+/**
+ * Top pools on EVERY venue, one page each.
+ *
+ * The network-wide `/pools` feed is a single ranking, so on a chain where one
+ * venue does most of the volume — Uniswap V3 on Robinhood clears hundreds of
+ * millions a day — the top pages are all that venue, and a launchpad doing real
+ * but smaller numbers never appears at any page depth we can afford. Asking each
+ * venue for its own top pools guarantees every one of them is represented,
+ * which is the difference between "the chain's biggest pools" and "the chain".
+ *
+ * This belongs to the slow discovery lane, not the 30-second market lane: it
+ * costs one request per venue and answers "what exists", which does not change
+ * minute to minute.
+ */
+const MAX_VENUES = 14;
+
+export async function fetchVenuePools(cfg: ChainConfig): Promise<TokenRow[]> {
+  const net = cfg.geckoterminalNetwork;
+  if (!net) return [];
+  const dexes = await fetchNetworkDexes(cfg);
+  if (!dexes.length) return [];
+
+  // Launchpads first — they are the venues the global ranking buries, and the
+  // reason this sweep exists at all.
+  const ordered = [...dexes].sort((a, b) => Number(b.isLaunchpad) - Number(a.isLaunchpad));
+  const responses = await Promise.all(
+    ordered
+      .slice(0, MAX_VENUES)
+      .map((d) =>
+        gt<GtPoolsResp>(
+          `/networks/${net}/dexes/${encodeURIComponent(d.id)}/pools?include=base_token%2Cdex&page=1`,
+          15_000,
+        ),
+      ),
+  );
+  return rowsFromPoolPages(responses);
+}
+
+/**
+ * Fold a set of pool pages into one row per token.
+ *
+ * Shared by the network feed and the per-venue sweep so both produce identical
+ * rows — the aggregation rules (liquidity sums, deepest pool prices, graduation
+ * across venues) live in exactly one place.
+ */
+function rowsFromPoolPages(responses: (GtPoolsResp | null)[]): TokenRow[] {
   const tokensById = new Map<string, GtIncluded>();
   const dexNames = new Map<string, string>();
   for (const resp of responses) {
@@ -276,7 +405,7 @@ export async function fetchNetworkPools(cfg: ChainConfig): Promise<TokenRow[]> {
 
     const dexId = p.relationships?.dex?.data?.id ?? "";
     const dexName = dexNames.get(dexId) ?? prettyDex(dexId);
-    const isLaunchpad = LAUNCHPAD_RE.test(dexId);
+    const isLaunchpad = isLaunchpadVenue(dexId, dexName);
     const reserve = n(a.reserve_in_usd);
     const price = n(a.base_token_price_usd);
     const pc = a.price_change_percentage ?? {};

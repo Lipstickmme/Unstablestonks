@@ -5,6 +5,7 @@ import { Footer } from "@/components/terminal/Footer";
 import { SwapPanel } from "@/components/terminal/SwapPanel";
 import { PriceChart } from "@/components/terminal/PriceChart";
 import { LiveTrades } from "@/components/terminal/LiveTrades";
+import { PoolBreakdown } from "@/components/terminal/PoolBreakdown";
 import { XSocialPanel } from "@/components/terminal/XSocialPanel";
 import { WhaleWatch } from "@/components/terminal/WhaleWatch";
 import { BundleWatch } from "@/components/terminal/BundleWatch";
@@ -375,6 +376,9 @@ function TokenDetail() {
 
               <div className="space-y-4">
                 <SwapPanel token={token} />
+                {/* Directly under the trade panel: the header's liquidity number
+                    is a sum across venues, and this is what it is made of. */}
+                <PoolBreakdown pools={data?.pools ?? []} loading={isLoading} />
                 <a
                   href={baseBotUrl(token.address)}
                   target="_blank"
